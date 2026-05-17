@@ -459,9 +459,16 @@ export default function Chat() {
         setJwt(data.session.access_token ?? null);
       }
     })();
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       setUserId(session?.user?.id ?? null);
       setJwt(session?.access_token ?? null);
+      // On a fresh sign-in (post-OAuth), kill any lingering "Session expired"
+      // banner immediately rather than waiting for the next render cycle.
+      // SIGNED_IN fires both on initial auth and on token refresh.
+      if (event === "SIGNED_IN") {
+        setShowError(false);
+        hasSentThisSessionRef.current = false;
+      }
     });
     return () => sub.subscription.unsubscribe();
   }, []);
