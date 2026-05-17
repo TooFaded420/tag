@@ -76,12 +76,16 @@ async function signAnonSession(payload: { ip_hash: string; expires_at: number })
   return `${body}:${sig}`;
 }
 
-async function verifyAnonSession(token: string, expectedIpHash: string): Promise<boolean> {
+async function verifyAnonSession(token: string, _expectedIpHash: string): Promise<boolean> {
+  // NOTE: IP binding intentionally NOT enforced anymore. Mobile users roam,
+  // NAT pools change, VPNs rotate, IPv6 privacy extensions cycle every few
+  // minutes. Binding to ip_hash forced re-verification on every request for
+  // anyone whose apparent client IP shifted, which is the common case. The
+  // HMAC signature + 30-min expiry alone is enough to anti-abuse — possession
+  // of a valid signed token means somebody passed Turnstile recently. Quota
+  // is still tracked per IP server-side, so a stolen token can't bypass quota.
   try {
     const parts = token.split(":");
-    // token format: <ip_hash>:<expires_at>:<sig>
-    // ip_hash is a hex sha256 (64 chars, no colons), expires_at is numeric,
-    // sig is base64url. Safe to split on ":" and take last as sig.
     if (parts.length < 3) return false;
     const sig = parts[parts.length - 1];
     const expiresStr = parts[parts.length - 2];
@@ -89,9 +93,7 @@ async function verifyAnonSession(token: string, expectedIpHash: string): Promise
     if (!ipHash || !expiresStr || !sig) return false;
     const expiresAt = parseInt(expiresStr, 10);
     if (Number.isNaN(expiresAt) || expiresAt < Date.now()) return false;
-    if (ipHash !== expectedIpHash) return false;
     const expected = await signAnonSession({ ip_hash: ipHash, expires_at: expiresAt });
-    // Constant-time-ish compare (token lengths fixed).
     if (expected.length !== token.length) return false;
     let diff = 0;
     for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ token.charCodeAt(i);
