@@ -6,6 +6,7 @@ import {
   optionsResponse,
   readJson,
 } from "../_shared/http.ts";
+import { logRequest } from "../_shared/log.ts";
 
 // ---------------------------------------------------------------------------
 // mem0-write — persist a memory entry for the authenticated user
@@ -111,7 +112,7 @@ serve(async (req) => {
     embedding = await embedText(content.trim());
   } catch (err) {
     console.error("mem0-write: embedding failed:", err instanceof Error ? err.message : err);
-    console.log(JSON.stringify({ route: "mem0-write", total_latency_ms: Date.now() - reqStart, status: "upstream_error", user_id: userId }));
+    logRequest({ route: "mem0-write", status: "upstream_error", start: reqStart, user_id: userId });
     return errorResponse({ error: "failed to write memory" }, 502);
   }
 
@@ -133,10 +134,10 @@ serve(async (req) => {
 
   if (error) {
     console.error("mem0-write: insert failed:", error.message);
-    console.log(JSON.stringify({ route: "mem0-write", total_latency_ms: Date.now() - reqStart, status: "upstream_error", user_id: userId }));
+    logRequest({ route: "mem0-write", status: "upstream_error", start: reqStart, user_id: userId });
     return errorResponse({ error: "failed to write memory" }, 500);
   }
 
-  console.log(JSON.stringify({ route: "mem0-write", total_latency_ms: Date.now() - reqStart, status: "ok", user_id: userId }));
+  logRequest({ route: "mem0-write", status: "ok", start: reqStart, user_id: userId });
   return jsonResponse({ id: (data as any).id, created_at: (data as any).created_at });
 });

@@ -6,6 +6,7 @@ import {
   errorResponse,
   readJson,
 } from "../_shared/http.ts";
+import { logRequest } from "../_shared/log.ts";
 
 const SYNTHETIC_API_KEY = Deno.env.get("SYNTHETIC_API_KEY");
 const SYNTHETIC_BASE_URL =
@@ -424,15 +425,15 @@ serve(async (req) => {
       );
       const tsData = await tsRes.json();
       if (!tsData.success) {
-        console.log(JSON.stringify({
+        logRequest({
           route: "synthetic-public-proxy",
+          status: "turnstile_failed",
+          start: reqStart,
           tier: "anon",
           model: body.model,
           upstream_latency_ms: -1,
-          total_latency_ms: Date.now() - reqStart,
-          status: "turnstile_failed",
           ip_hash: (await sha256(ip)).slice(0, 8),
-        }));
+        });
         return errorResponse({ error: "Turnstile verification failed" }, 403);
       }
 
@@ -501,16 +502,16 @@ serve(async (req) => {
     }
 
     if (usage.quota_exceeded) {
-      console.log(JSON.stringify({
+      logRequest({
         route: "synthetic-public-proxy",
+        status: "quota_exceeded",
+        start: reqStart,
         tier,
         model: body.model,
         upstream_latency_ms: -1,
-        total_latency_ms: Date.now() - reqStart,
-        status: "quota_exceeded",
         user_id: userId ?? undefined,
         ip_hash: !userId ? ipHash.slice(0, 8) : undefined,
-      }));
+      });
       return errorResponse(
         {
           error: "Daily quota exceeded",
@@ -554,18 +555,17 @@ serve(async (req) => {
 
     const data = await upstream.json();
     if (!upstream.ok) {
-      const totalLatencyMs = Date.now() - reqStart;
-      console.log(JSON.stringify({
+      logRequest({
         route: "synthetic-public-proxy",
+        status: "upstream_error",
+        start: reqStart,
         tier,
         model: body.model,
         upstream_latency_ms: upstreamLatencyMs,
-        total_latency_ms: totalLatencyMs,
-        status: "upstream_error",
         upstream_status: upstream.status,
         user_id: userId ?? undefined,
         ip_hash: !userId ? (await sha256(ip)).slice(0, 8) : undefined,
-      }));
+      });
       return errorResponse(
         { error: "upstream error", status: upstream.status, detail: data },
         502,
@@ -581,17 +581,16 @@ serve(async (req) => {
       ? { headers: { "X-Anon-Session": newAnonSessionToken } }
       : undefined;
 
-    const totalLatencyMs = Date.now() - reqStart;
-    console.log(JSON.stringify({
+    logRequest({
       route: "synthetic-public-proxy",
+      status: isByok ? "byok_passthrough" : "ok",
+      start: reqStart,
       tier,
       model: body.model,
       upstream_latency_ms: upstreamLatencyMs,
-      total_latency_ms: totalLatencyMs,
-      status: isByok ? "byok_passthrough" : "ok",
       user_id: userId ?? undefined,
       ip_hash: !userId ? (await sha256(ip)).slice(0, 8) : undefined,
-    }));
+    });
 
     return jsonResponse(
       {
@@ -603,18 +602,17 @@ serve(async (req) => {
       responseInit,
     );
   } catch (err) {
-    const totalLatencyMs = Date.now() - reqStart;
-    console.log(JSON.stringify({
+    logRequest({
       route: "synthetic-public-proxy",
+      status: "upstream_error",
+      start: reqStart,
       tier,
       model: body.model,
       upstream_latency_ms: -1,
-      total_latency_ms: totalLatencyMs,
-      status: "upstream_error",
       error: err instanceof Error ? err.message : "unknown",
       user_id: userId ?? undefined,
       ip_hash: !userId ? (await sha256(ip)).slice(0, 8) : undefined,
-    }));
+    });
     return errorResponse({ error: "internal error" }, 500);
   }
 });

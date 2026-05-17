@@ -3,6 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.91.1";
 import Stripe from "https://esm.sh/stripe@14?target=deno";
 
 import { errorResponse, jsonResponse, optionsResponse } from "../_shared/http.ts";
+import { logRequest } from "../_shared/log.ts";
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return optionsResponse();
@@ -85,23 +86,12 @@ serve(async (req: Request) => {
       },
     });
 
-    console.log(JSON.stringify({
-      route: "tag-pro-checkout",
-      total_latency_ms: Date.now() - reqStart,
-      status: "ok",
-      user_id: userId,
-    }));
+    logRequest({ route: "tag-pro-checkout", status: "ok", start: reqStart, user_id: userId });
     return jsonResponse({ url: session.url });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("tag-pro-checkout: Stripe error:", msg);
-    console.log(JSON.stringify({
-      route: "tag-pro-checkout",
-      total_latency_ms: Date.now() - reqStart,
-      status: "upstream_error",
-      user_id: userId,
-      error: msg,
-    }));
+    logRequest({ route: "tag-pro-checkout", status: "upstream_error", start: reqStart, user_id: userId, error: msg });
     return errorResponse({ error: `Stripe: ${msg}` }, 500);
   }
 });

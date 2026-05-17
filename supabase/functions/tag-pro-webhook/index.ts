@@ -1,61 +1,8 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.91.1";
 import Stripe from "https://esm.sh/stripe@14?target=deno";
-
-/**
- * Verify Stripe webhook signature using Web Crypto API (HMAC-SHA256).
- * Mirrors the pattern in stripe-webhook/index.ts.
- */
-async function verifyStripeSignature(
-  payload: string,
-  sigHeader: string,
-  secret: string,
-): Promise<boolean> {
-  const parts = sigHeader.split(",").reduce(
-    (acc, part) => {
-      const [key, value] = part.split("=");
-      if (key === "t") acc.timestamp = value;
-      if (key === "v1") acc.signatures.push(value);
-      return acc;
-    },
-    { timestamp: "", signatures: [] as string[] },
-  );
-
-  if (!parts.timestamp || parts.signatures.length === 0) return false;
-
-  // Reject if timestamp is older than 5 minutes
-  const ts = parseInt(parts.timestamp, 10);
-  if (Math.abs(Date.now() / 1000 - ts) > 300) return false;
-
-  const signedPayload = `${parts.timestamp}.${payload}`;
-  const encoder = new TextEncoder();
-
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-
-  const sig = await crypto.subtle.sign("HMAC", key, encoder.encode(signedPayload));
-  const expectedHex = Array.from(new Uint8Array(sig))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-
-  return parts.signatures.some((s) => timingSafeStringCompare(s, expectedHex));
-}
-
-/**
- * Constant-time string comparison to prevent timing attacks.
- * Returns false immediately on length mismatch (length is not secret in HMAC signatures).
- */
-function timingSafeStringCompare(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  const aBytes = new TextEncoder().encode(a);
-  const bBytes = new TextEncoder().encode(b);
-  return crypto.subtle.timingSafeEqual(aBytes, bBytes);
-}
+import { verifyStripeSignature } from "../_shared/stripe.ts";
+import { logRequest } from "../_shared/log.ts";
 
 serve(async (req: Request) => {
   // Webhooks only come via POST from Stripe — no CORS needed
@@ -144,7 +91,18 @@ serve(async (req: Request) => {
       );
 
     if (subError) {
-      console.error("tag-pro-webhook: Failed to upsert tag_subscriptions:", subError);
+      // A2: return 500 so Stripe retries — upsert is idempotent, retries are safe
+      logRequest({
+        route: "tag-pro-webhook",
+        status: "db_error",
+        start: reqStart,
+        event: event.type,
+        error_code: subError.code ?? subError.message,
+      });
+      return new Response(
+        JSON.stringify({ error: "internal_db_failure", retry: true }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
     }
 
     // Upgrade profile tier to 'pro'
@@ -154,10 +112,21 @@ serve(async (req: Request) => {
       .eq("id", userId);
 
     if (profileError) {
-      console.error("tag-pro-webhook: Failed to upgrade profile tier:", profileError);
-    } else {
-      console.log(`tag-pro-webhook: User ${userId} upgraded to pro`);
+      // A2: return 500 so Stripe retries — profile update is idempotent
+      logRequest({
+        route: "tag-pro-webhook",
+        status: "db_error",
+        start: reqStart,
+        event: event.type,
+        error_code: profileError.code ?? profileError.message,
+      });
+      return new Response(
+        JSON.stringify({ error: "internal_db_failure", retry: true }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
     }
+
+    console.log(`tag-pro-webhook: User ${userId} upgraded to pro`);
 
     // ── Send welcome email (fire-and-forget — never rolls back tier flip) ───
     try {
@@ -315,11 +284,11 @@ JR — Tag is open source at https://github.com/TooFaded420/tag if you want to f
     }
   }
 
-  console.log(JSON.stringify({
+  logRequest({
     route: "tag-pro-webhook",
-    total_latency_ms: Date.now() - reqStart,
     status: "ok",
-    event_type: event.type,
-  }));
+    start: reqStart,
+    event: event.type,
+  });
   return new Response("OK", { status: 200 });
 });
