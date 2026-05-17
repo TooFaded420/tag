@@ -262,6 +262,7 @@ export default function Chat() {
   const [pendingFileNote, setPendingFileNote] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
+  const [showError, setShowError] = useState(false);
 
   // ── Sidebar / thread state ──────────────────────────────────────────────
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -510,6 +511,19 @@ export default function Chat() {
       return updated;
     });
   }, [chat.messages, activeThreadId]);
+
+  // ── Error banner visibility: show on new error, clear when streaming starts ─
+  useEffect(() => {
+    if (chat.error) {
+      setShowError(true);
+    }
+  }, [chat.error]);
+
+  useEffect(() => {
+    if (chat.status === "streaming" || chat.status === "submitted") {
+      setShowError(false);
+    }
+  }, [chat.status]);
 
   // ── Auto-scroll ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1007,10 +1021,20 @@ export default function Chat() {
                   </div>
                 </div>
 
-                {/* Error banner — relative z-10 so the hero watermark (z-1) doesn't cover it */}
-                {chat.error && (
+                {/* Error banner — relative z-10 so the hero watermark (z-1) doesn't cover it.
+                    showError is cleared as soon as the next send begins streaming so
+                    stale banners don't persist between successful messages. */}
+                {chat.error && showError && (
                   <div className="relative z-10 mx-4 mb-2 rounded-md border border-destructive bg-destructive/10 px-4 py-3">
                     <p className="text-sm text-destructive">{chat.error.message}</p>
+                    <button
+                      type="button"
+                      onClick={() => setShowError(false)}
+                      aria-label="Dismiss error"
+                      className="absolute right-2 top-2 rounded p-0.5 text-destructive/60 hover:text-destructive transition-colors"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
                   </div>
                 )}
 

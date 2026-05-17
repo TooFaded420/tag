@@ -9,6 +9,7 @@ serve(async (req: Request) => {
   if (req.method !== "POST") {
     return errorResponse({ error: "Method not allowed" }, 405);
   }
+  const reqStart = Date.now();
 
   // ── Env guards ──────────────────────────────────────────────────────────────
   const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
@@ -84,10 +85,23 @@ serve(async (req: Request) => {
       },
     });
 
+    console.log(JSON.stringify({
+      route: "tag-pro-checkout",
+      total_latency_ms: Date.now() - reqStart,
+      status: "ok",
+      user_id: userId,
+    }));
     return jsonResponse({ url: session.url });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("tag-pro-checkout: Stripe error:", msg);
+    console.log(JSON.stringify({
+      route: "tag-pro-checkout",
+      total_latency_ms: Date.now() - reqStart,
+      status: "upstream_error",
+      user_id: userId,
+      error: msg,
+    }));
     return errorResponse({ error: `Stripe: ${msg}` }, 500);
   }
 });

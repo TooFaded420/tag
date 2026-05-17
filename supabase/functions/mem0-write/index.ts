@@ -72,6 +72,7 @@ async function embedText(text: string): Promise<number[]> {
 serve(async (req) => {
   if (req.method === "OPTIONS") return optionsResponse();
   if (req.method !== "POST") return errorResponse({ error: "POST required" }, 405);
+  const reqStart = Date.now();
 
   // Guard: synthetic.new must be configured
   if (!SYNTHETIC_API_KEY) {
@@ -110,6 +111,7 @@ serve(async (req) => {
     embedding = await embedText(content.trim());
   } catch (err) {
     console.error("mem0-write: embedding failed:", err instanceof Error ? err.message : err);
+    console.log(JSON.stringify({ route: "mem0-write", total_latency_ms: Date.now() - reqStart, status: "upstream_error", user_id: userId }));
     return errorResponse({ error: "failed to write memory" }, 502);
   }
 
@@ -131,8 +133,10 @@ serve(async (req) => {
 
   if (error) {
     console.error("mem0-write: insert failed:", error.message);
+    console.log(JSON.stringify({ route: "mem0-write", total_latency_ms: Date.now() - reqStart, status: "upstream_error", user_id: userId }));
     return errorResponse({ error: "failed to write memory" }, 500);
   }
 
+  console.log(JSON.stringify({ route: "mem0-write", total_latency_ms: Date.now() - reqStart, status: "ok", user_id: userId }));
   return jsonResponse({ id: (data as any).id, created_at: (data as any).created_at });
 });

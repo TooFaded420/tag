@@ -62,6 +62,7 @@ serve(async (req: Request) => {
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
   }
+  const reqStart = Date.now();
 
   // ── Env guards ──────────────────────────────────────────────────────────────
   const webhookSecret = Deno.env.get("STRIPE_WEBHOOK_SECRET");
@@ -209,5 +210,11 @@ serve(async (req: Request) => {
     }
   }
 
+  console.log(JSON.stringify({
+    route: "tag-pro-webhook",
+    total_latency_ms: Date.now() - reqStart,
+    status: "ok",
+    event_type: event.type,
+  }));
   return new Response("OK", { status: 200 });
 });

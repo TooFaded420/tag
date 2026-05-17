@@ -53,51 +53,116 @@ const PROVIDER_ENDPOINTS: Record<string, string> = {
 // ─────────────────────────────────────────────────────────────────────────────
 // Anon session token — 30-minute HMAC-signed token so users verify Turnstile
 // once and reuse the session for up to 30 minutes without re-verifying.
+//
+// Token format v2: v1:anon-chat:<ip_hash>:<iat_ms>:<exp_ms>:<sig_base64url>
+// HMAC body:       v1:anon-chat:<ip_hash>:<iat_ms>:<exp_ms>
+//
+// Legacy format (no version prefix): <ip_hash>:<exp_ms>:<sig_base64url>
+// Accepted during grace window (legacy tokens expire naturally within 30 min).
+// TODO(cleanup): remove legacy path after 2026-06-16 (30 days from ship).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ANON_SESSION_TTL_MS = 30 * 60 * 1000;
 
-async function signAnonSession(payload: { ip_hash: string; expires_at: number }): Promise<string> {
+async function getHmacKey(): Promise<CryptoKey> {
   const secret = Deno.env.get("INTERNAL_SHARED_SECRET");
   if (!secret) throw new Error("INTERNAL_SHARED_SECRET missing");
-  const body = `${payload.ip_hash}:${payload.expires_at}`;
-  const key = await crypto.subtle.importKey(
+  return crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),
     { name: "HMAC", hash: "SHA-256" },
     false,
-    ["sign"],
+    ["sign", "verify"],
   );
-  const sigBuf = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
-  const sig = btoa(String.fromCharCode(...new Uint8Array(sigBuf)))
+}
+
+function toBase64url(buf: ArrayBuffer): string {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
+}
+
+function fromBase64url(s: string): Uint8Array {
+  const padded = s.replace(/-/g, "+").replace(/_/g, "/").padEnd(
+    Math.ceil(s.length / 4) * 4,
+    "=",
+  );
+  const bin = atob(padded);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+async function signAnonSession(payload: { ip_hash: string; expires_at: number }): Promise<string> {
+  const iat = Date.now();
+  const exp = payload.expires_at;
+  const body = `v1:anon-chat:${payload.ip_hash}:${iat}:${exp}`;
+  const key = await getHmacKey();
+  const sigBuf = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
+  const sig = toBase64url(sigBuf);
   return `${body}:${sig}`;
 }
 
 async function verifyAnonSession(token: string, _expectedIpHash: string): Promise<boolean> {
-  // NOTE: IP binding intentionally NOT enforced anymore. Mobile users roam,
-  // NAT pools change, VPNs rotate, IPv6 privacy extensions cycle every few
-  // minutes. Binding to ip_hash forced re-verification on every request for
-  // anyone whose apparent client IP shifted, which is the common case. The
-  // HMAC signature + 30-min expiry alone is enough to anti-abuse — possession
-  // of a valid signed token means somebody passed Turnstile recently. Quota
-  // is still tracked per IP server-side, so a stolen token can't bypass quota.
+  // NOTE: IP binding intentionally NOT enforced. See commit 31dfd28 for rationale.
+  // HMAC signature + 30-min expiry is sufficient anti-abuse; quota is still
+  // tracked per IP server-side.
   try {
+    const key = await getHmacKey();
+
+    // ── v2 path: v1:anon-chat:<ip_hash>:<iat_ms>:<exp_ms>:<sig> ─────────────
+    if (token.startsWith("v1:anon-chat:")) {
+      // Format: v1:anon-chat:<ip_hash>:<iat_ms>:<exp_ms>:<sig>
+      // Split from the right to isolate sig; ip_hash itself may contain colons.
+      const lastColon = token.lastIndexOf(":");
+      if (lastColon < 0) return false;
+      const body = token.slice(0, lastColon);
+      const sigProvided = token.slice(lastColon + 1);
+
+      // Extract exp from body (5th colon-delimited field: v1:anon-chat:<ip>:<iat>:<exp>)
+      const bodyParts = body.split(":");
+      if (bodyParts.length < 5) return false;
+      const expStr = bodyParts[bodyParts.length - 1];
+      const exp = parseInt(expStr, 10);
+      if (Number.isNaN(exp) || exp < Date.now()) return false;
+
+      // Constant-time compare via timingSafeEqual on raw signature bytes
+      const sigBuf = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
+      const expectedBytes = new Uint8Array(sigBuf);
+      let providedBytes: Uint8Array;
+      try {
+        providedBytes = fromBase64url(sigProvided);
+      } catch {
+        return false;
+      }
+      if (providedBytes.length !== expectedBytes.length) return false;
+      return crypto.subtle.timingSafeEqual(providedBytes, expectedBytes);
+    }
+
+    // ── Legacy path: <ip_hash>:<exp_ms>:<sig> ────────────────────────────────
+    // TODO(cleanup): remove after 2026-06-16 (30 days from ship).
     const parts = token.split(":");
     if (parts.length < 3) return false;
-    const sig = parts[parts.length - 1];
-    const expiresStr = parts[parts.length - 2];
-    const ipHash = parts.slice(0, parts.length - 2).join(":");
-    if (!ipHash || !expiresStr || !sig) return false;
-    const expiresAt = parseInt(expiresStr, 10);
-    if (Number.isNaN(expiresAt) || expiresAt < Date.now()) return false;
-    const expected = await signAnonSession({ ip_hash: ipHash, expires_at: expiresAt });
-    if (expected.length !== token.length) return false;
-    let diff = 0;
-    for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ token.charCodeAt(i);
-    return diff === 0;
+    const legacySig = parts[parts.length - 1];
+    const legacyExpStr = parts[parts.length - 2];
+    const legacyIpHash = parts.slice(0, parts.length - 2).join(":");
+    if (!legacyIpHash || !legacyExpStr || !legacySig) return false;
+    const legacyExp = parseInt(legacyExpStr, 10);
+    if (Number.isNaN(legacyExp) || legacyExp < Date.now()) return false;
+
+    // Re-sign using legacy format to compare
+    const legacyBody = `${legacyIpHash}:${legacyExpStr}`;
+    const legacySigBuf = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(legacyBody));
+    const legacyExpectedBytes = new Uint8Array(legacySigBuf);
+    let legacyProvidedBytes: Uint8Array;
+    try {
+      legacyProvidedBytes = fromBase64url(legacySig);
+    } catch {
+      return false;
+    }
+    if (legacyProvidedBytes.length !== legacyExpectedBytes.length) return false;
+    return crypto.subtle.timingSafeEqual(legacyProvidedBytes, legacyExpectedBytes);
   } catch {
     return false;
   }
@@ -303,6 +368,9 @@ serve(async (req) => {
     return errorResponse({ error: "model field required" }, 400);
   }
 
+  // Request-level timer for structured observability logs
+  const reqStart = Date.now();
+
   // ── Turnstile verification (anon path only) ───────────────────────────────
   // After a successful Turnstile verify we issue a 30-min HMAC session token
   // so the client can skip re-verification on subsequent messages.
@@ -356,6 +424,15 @@ serve(async (req) => {
       );
       const tsData = await tsRes.json();
       if (!tsData.success) {
+        console.log(JSON.stringify({
+          route: "synthetic-public-proxy",
+          tier: "anon",
+          model: body.model,
+          upstream_latency_ms: -1,
+          total_latency_ms: Date.now() - reqStart,
+          status: "turnstile_failed",
+          ip_hash: (await sha256(ip)).slice(0, 8),
+        }));
         return errorResponse({ error: "Turnstile verification failed" }, 403);
       }
 
@@ -424,6 +501,16 @@ serve(async (req) => {
     }
 
     if (usage.quota_exceeded) {
+      console.log(JSON.stringify({
+        route: "synthetic-public-proxy",
+        tier,
+        model: body.model,
+        upstream_latency_ms: -1,
+        total_latency_ms: Date.now() - reqStart,
+        status: "quota_exceeded",
+        user_id: userId ?? undefined,
+        ip_hash: !userId ? ipHash.slice(0, 8) : undefined,
+      }));
       return errorResponse(
         {
           error: "Daily quota exceeded",
@@ -454,6 +541,7 @@ serve(async (req) => {
   };
 
   try {
+    const upstreamStart = Date.now();
     const upstream = await fetch(upstreamUrl, {
       method: "POST",
       headers: {
@@ -462,10 +550,22 @@ serve(async (req) => {
       },
       body: JSON.stringify(payload),
     });
+    const upstreamLatencyMs = Date.now() - upstreamStart;
 
     const data = await upstream.json();
     if (!upstream.ok) {
-      console.error("upstream error:", upstream.status, upstreamUrl);
+      const totalLatencyMs = Date.now() - reqStart;
+      console.log(JSON.stringify({
+        route: "synthetic-public-proxy",
+        tier,
+        model: body.model,
+        upstream_latency_ms: upstreamLatencyMs,
+        total_latency_ms: totalLatencyMs,
+        status: "upstream_error",
+        upstream_status: upstream.status,
+        user_id: userId ?? undefined,
+        ip_hash: !userId ? (await sha256(ip)).slice(0, 8) : undefined,
+      }));
       return errorResponse(
         { error: "upstream error", status: upstream.status, detail: data },
         502,
@@ -481,6 +581,18 @@ serve(async (req) => {
       ? { headers: { "X-Anon-Session": newAnonSessionToken } }
       : undefined;
 
+    const totalLatencyMs = Date.now() - reqStart;
+    console.log(JSON.stringify({
+      route: "synthetic-public-proxy",
+      tier,
+      model: body.model,
+      upstream_latency_ms: upstreamLatencyMs,
+      total_latency_ms: totalLatencyMs,
+      status: isByok ? "byok_passthrough" : "ok",
+      user_id: userId ?? undefined,
+      ip_hash: !userId ? (await sha256(ip)).slice(0, 8) : undefined,
+    }));
+
     return jsonResponse(
       {
         ok: true,
@@ -491,10 +603,18 @@ serve(async (req) => {
       responseInit,
     );
   } catch (err) {
-    console.error(
-      "synthetic-public-proxy failed:",
-      err instanceof Error ? err.message : "unknown",
-    );
+    const totalLatencyMs = Date.now() - reqStart;
+    console.log(JSON.stringify({
+      route: "synthetic-public-proxy",
+      tier,
+      model: body.model,
+      upstream_latency_ms: -1,
+      total_latency_ms: totalLatencyMs,
+      status: "upstream_error",
+      error: err instanceof Error ? err.message : "unknown",
+      user_id: userId ?? undefined,
+      ip_hash: !userId ? (await sha256(ip)).slice(0, 8) : undefined,
+    }));
     return errorResponse({ error: "internal error" }, 500);
   }
 });

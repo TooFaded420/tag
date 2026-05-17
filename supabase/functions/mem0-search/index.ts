@@ -72,6 +72,7 @@ async function embedText(text: string): Promise<number[]> {
 serve(async (req) => {
   if (req.method === "OPTIONS") return optionsResponse();
   if (req.method !== "POST") return errorResponse({ error: "POST required" }, 405);
+  const reqStart = Date.now();
 
   // Guard: synthetic.new must be configured
   if (!SYNTHETIC_API_KEY) {
@@ -109,6 +110,7 @@ serve(async (req) => {
     queryEmbedding = await embedText(query.trim());
   } catch (err) {
     console.error("mem0-search: embedding failed:", err instanceof Error ? err.message : err);
+    console.log(JSON.stringify({ route: "mem0-search", total_latency_ms: Date.now() - reqStart, status: "upstream_error", user_id: userId }));
     return errorResponse({ error: "embedding failed", detail: err instanceof Error ? err.message : "unknown" }, 502);
   }
 
@@ -128,6 +130,7 @@ serve(async (req) => {
 
   if (error) {
     console.error("mem0-search: RPC failed:", error.message);
+    console.log(JSON.stringify({ route: "mem0-search", total_latency_ms: Date.now() - reqStart, status: "upstream_error", user_id: userId }));
     return errorResponse({ error: "memory search failed", detail: error.message }, 500);
   }
 
@@ -140,5 +143,6 @@ serve(async (req) => {
     created_at: row.created_at,
   }));
 
+  console.log(JSON.stringify({ route: "mem0-search", total_latency_ms: Date.now() - reqStart, status: "ok", user_id: userId, results: memories.length }));
   return jsonResponse({ memories });
 });
