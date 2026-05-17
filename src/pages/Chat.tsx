@@ -528,7 +528,27 @@ export default function Chat() {
       fetch: async (input, init) => {
       const reqBody = init?.body ? JSON.parse(init.body as string) : {};
 
-      const messages: Array<{ role: string; content: string }> = reqBody.messages ?? [];
+      // AI SDK v6 sends UIMessages: { role, parts: [{ type:"text", text:"..." }] }.
+      // synthetic.new (OpenAI-compatible) requires { role, content: string }.
+      // Normalize: flatten parts[*].text into content, or pass through if the
+      // message is already in legacy { role, content } shape.
+      // deno-lint-ignore no-explicit-any
+      const rawMessages: Array<any> = reqBody.messages ?? [];
+      const messages: Array<{ role: string; content: string }> = rawMessages.map((m) => {
+        if (typeof m?.content === "string" && m.content.length > 0) {
+          return { role: m.role, content: m.content };
+        }
+        if (Array.isArray(m?.parts)) {
+          const text = m.parts
+            // deno-lint-ignore no-explicit-any
+            .filter((p: any) => p?.type === "text" && typeof p.text === "string")
+            // deno-lint-ignore no-explicit-any
+            .map((p: any) => p.text)
+            .join("");
+          return { role: m.role, content: text };
+        }
+        return { role: m.role, content: "" };
+      }).filter((m) => m.content.length > 0);
       const latestUserMsg = [...messages].reverse().find((m) => m.role === "user");
       const latestUserContent = latestUserMsg?.content ?? "";
 
