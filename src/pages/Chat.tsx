@@ -360,6 +360,9 @@ export default function Chat() {
   const [input, setInput] = useState("");
   const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
   const [showError, setShowError] = useState(false);
+  // Track if user has actively sent during THIS session — guards the error banner
+  // against stale chat.error rehydrated from restored threads on page mount.
+  const hasSentThisSessionRef = useRef(false);
   const [showProWelcome, setShowProWelcome] = useState(() => {
     try {
       if (localStorage.getItem(PRO_WELCOMED_KEY)) return false;
@@ -631,9 +634,12 @@ export default function Chat() {
     });
   }, [chat.messages, activeThreadId]);
 
-  // ── Error banner visibility: show on new error, clear when streaming starts ─
+  // ── Error banner visibility: show on new error AFTER user has actively sent
+  // this session. Without the hasSent guard, rehydrated chat.error from old
+  // restored threads would show the banner on every page load. Cleared when
+  // streaming starts on the next attempt.
   useEffect(() => {
-    if (chat.error) {
+    if (chat.error && hasSentThisSessionRef.current) {
       setShowError(true);
     }
   }, [chat.error]);
@@ -1174,6 +1180,7 @@ export default function Chat() {
                       e.preventDefault();
                       if (!input.trim()) return;
                       if (!activeThreadId) createNewThread();
+                      hasSentThisSessionRef.current = true;
                       chat.sendMessage({ text: input });
                       setInput("");
                     }}
@@ -1199,6 +1206,7 @@ export default function Chat() {
                           e.preventDefault();
                           if (!canSend) return;
                           if (!activeThreadId) createNewThread();
+                          hasSentThisSessionRef.current = true;
                           chat.sendMessage({ text: input });
                           setInput("");
                           (e.target as HTMLTextAreaElement).style.height = "auto";
