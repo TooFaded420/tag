@@ -413,6 +413,14 @@ export default function Chat() {
   useEffect(() => { turnstileTokenRef.current = turnstileToken; }, [turnstileToken]);
   useEffect(() => { anonSessionRef.current = anonSession; }, [anonSession]);
   useEffect(() => { modelRef.current = model; }, [model]);
+  // Mirror more state to refs so the fetch wrapper closure (created once)
+  // reads live values at request time, not the values present at mount.
+  // Memory injection + BYOK + pending file note were silently broken because
+  // they read closed-over jwt=null / byokKeys={} / pendingFileNote=null.
+  const byokKeysRef = useRef(byokKeys);
+  const pendingFileNoteRef = useRef(pendingFileNote);
+  useEffect(() => { byokKeysRef.current = byokKeys; }, [byokKeys]);
+  useEffect(() => { pendingFileNoteRef.current = pendingFileNote; }, [pendingFileNote]);
   const [showProWelcome, setShowProWelcome] = useState(() => {
     try {
       if (localStorage.getItem(PRO_WELCOMED_KEY)) return false;
@@ -538,6 +546,15 @@ export default function Chat() {
         anon_session_token: jwtRef.current ? undefined : anonSessionRef.current,
       }),
       fetch: async (input, init) => {
+      // Read all state via refs — transport is created once on mount and the
+      // closure would otherwise capture initial-render values (null jwt,
+      // default model, empty byokKeys) forever, silently breaking memory,
+      // model selection, BYOK, and file-note injection for any state set
+      // after first render.
+      const liveJwt = jwtRef.current;
+      const liveModel = modelRef.current;
+      const liveByokKeys = byokKeysRef.current;
+      const livePendingFileNote = pendingFileNoteRef.current;
       const reqBody = init?.body ? JSON.parse(init.body as string) : {};
 
       // AI SDK v6 sends UIMessages: { role, parts: [{ type:"text", text:"..." }] }.
@@ -565,17 +582,17 @@ export default function Chat() {
       const latestUserContent = latestUserMsg?.content ?? "";
 
       let finalMessages = messages;
-      if (pendingFileNote) {
+      if (livePendingFileNote) {
         const fileNoteMsg = {
           role: "system",
-          content: `[File just uploaded] ${pendingFileNote} The file's content has been stored in your memory and is available for retrieval.`,
+          content: `[File just uploaded] ${livePendingFileNote} The file's content has been stored in your memory and is available for retrieval.`,
         };
         finalMessages = [fileNoteMsg, ...finalMessages];
         setPendingFileNote(null);
       }
 
-      if (jwt && latestUserContent) {
-        const memories = await searchMemories(latestUserContent, jwt);
+      if (liveJwt && latestUserContent) {
+        const memories = await searchMemories(latestUserContent, liveJwt);
         if (memories.length > 0) {
           const alreadyInjected = messages.some(
             (m) => m.role === "system" && m.content.startsWith("You have access to the user's previous context.")
@@ -611,9 +628,9 @@ export default function Chat() {
 
       let activeBYOKProvider: string | undefined;
       let activeBYOKKey: string | undefined;
-      for (const [provider, key] of Object.entries(byokKeys)) {
-        if (key && byokKeys[provider]) {
-          if (provider === "synthetic" && model.startsWith("hf:")) {
+      for (const [provider, key] of Object.entries(liveByokKeys)) {
+        if (key && liveByokKeys[provider]) {
+          if (provider === "synthetic" && liveModel.startsWith("hf:")) {
             activeBYOKProvider = "synthetic";
             activeBYOKKey = key;
             break;
@@ -624,9 +641,9 @@ export default function Chat() {
           }
         }
       }
-      if (!activeBYOKProvider && model.startsWith("hf:") && byokKeys["synthetic"]) {
+      if (!activeBYOKProvider && liveModel.startsWith("hf:") && liveByokKeys["synthetic"]) {
         activeBYOKProvider = "synthetic";
-        activeBYOKKey = byokKeys["synthetic"];
+        activeBYOKKey = liveByokKeys["synthetic"];
       }
 
       let response: Response;
@@ -640,7 +657,7 @@ export default function Chat() {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            model,
+            model: liveModel,
             messages: finalMessages,
             temperature: reqBody.temperature ?? 0.7,
             max_tokens: reqBody.max_tokens ?? 4096,
@@ -652,14 +669,14 @@ export default function Chat() {
           body: JSON.stringify({
             ...reqBody,
             messages: finalMessages,
-            model,
+            model: liveModel,
             byok_provider: activeBYOKProvider,
           }),
         });
       } else {
         response = await fetch(input as RequestInfo, {
           ...init,
-          body: JSON.stringify({ ...reqBody, messages: finalMessages, model }),
+          body: JSON.stringify({ ...reqBody, messages: finalMessages, model: liveModel }),
         });
       }
 
@@ -678,7 +695,7 @@ export default function Chat() {
             response = await fetch(input as RequestInfo, {
               ...init,
               headers: retryHeaders,
-              body: JSON.stringify({ ...reqBody, messages: finalMessages, model }),
+              body: JSON.stringify({ ...reqBody, messages: finalMessages, model: liveModel }),
             });
           }
         } catch {
@@ -751,9 +768,9 @@ export default function Chat() {
       const data = await response.json();
       const content: string = data.choices?.[0]?.message?.content ?? "";
 
-      if (jwt && latestUserContent && latestUserContent.length >= 20 && latestUserContent !== lastWrittenMemoryRef.current) {
+      if (liveJwt && latestUserContent && latestUserContent.length >= 20 && latestUserContent !== lastWrittenMemoryRef.current) {
         lastWrittenMemoryRef.current = latestUserContent;
-        writeMemory(latestUserContent, jwt);
+        writeMemory(latestUserContent, liveJwt);
       }
 
       // AI SDK v6 UI Message Stream protocol — SSE with typed JSON events.
