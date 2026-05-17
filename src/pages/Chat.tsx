@@ -54,7 +54,7 @@ function ProWelcomeModal({ onDismiss }: { onDismiss: () => void }) {
           {/* Confetti burst — pure CSS SVG, fades out after 2.5 s */}
           <svg
             aria-hidden
-            className="pointer-events-none absolute inset-0 w-full h-full animate-[pro-confetti_2.5s_ease-out_forwards]"
+            className="pointer-events-none absolute inset-0 w-full h-full motion-safe:animate-[pro-confetti_2.5s_ease-out_forwards]"
             viewBox="0 0 400 260"
             fill="none"
           >
@@ -225,7 +225,20 @@ function writeMemory(content: string, jwt: string): void {
 // EmptyState — spray-paint motif
 // ---------------------------------------------------------------------------
 
-function EmptyState() {
+const STARTER_PROMPTS = [
+  "Explain quantum computing",
+  "Debug this JavaScript error",
+  "Plan a weekend in Chicago",
+  "Compare React vs Vue",
+  "Write a haiku about shipping",
+  "Summarize a topic for me",
+];
+
+interface EmptyStateProps {
+  onPickPrompt: (prompt: string) => void;
+}
+
+function EmptyState({ onPickPrompt }: EmptyStateProps) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center py-16 select-none">
       {/* Spray-paint splatter SVG — mauve + warm yellow */}
@@ -262,6 +275,21 @@ function EmptyState() {
       <p className="mt-2 text-xs text-muted-foreground">
         Free: 10 messages/day anonymous · 50/day signed in.
       </p>
+
+      {/* Starter prompt pills — set input but do not auto-send */}
+      <div className="mt-6 flex flex-wrap justify-center gap-2 max-w-lg px-4">
+        {STARTER_PROMPTS.map((prompt) => (
+          <button
+            key={prompt}
+            type="button"
+            onClick={() => onPickPrompt(prompt)}
+            className="rounded-full border border-primary/20 bg-primary/8 px-3 py-1.5 text-xs text-foreground hover:bg-primary/15 transition-colors"
+            style={{ fontFamily: "'JetBrains Mono', monospace" }}
+          >
+            {prompt}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -362,6 +390,7 @@ export default function Chat() {
   const [input, setInput] = useState("");
   const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
   const [showError, setShowError] = useState(false);
+  const [upgradeError, setUpgradeError] = useState<string | null>(null);
   // Track if user has actively sent during THIS session — guards the error banner
   // against stale chat.error rehydrated from restored threads on page mount.
   const hasSentThisSessionRef = useRef(false);
@@ -382,6 +411,7 @@ export default function Chat() {
   });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lastWrittenMemoryRef = useRef<string>("");
 
   // ── Auth ────────────────────────────────────────────────────────────────
@@ -729,13 +759,22 @@ export default function Chat() {
         },
       });
       if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err?.error ?? "Checkout failed");
+        const body = await res.json().catch(() => ({}));
+        const code: string = body?.error ?? "";
+        const msg =
+          code === "already_subscribed"
+            ? "You're already a Pro subscriber."
+            : code
+            ? code.replace(/_/g, " ")
+            : "Checkout failed. Please try again.";
+        throw new Error(msg);
       }
       const { url } = await res.json();
       if (url) window.location.href = url;
     } catch (err) {
-      console.error("Upgrade error:", err);
+      const msg = err instanceof Error ? err.message : "Checkout failed. Please try again.";
+      setUpgradeError(msg);
+      setTimeout(() => setUpgradeError(null), 8000);
     } finally {
       setUpgrading(false);
     }
@@ -746,6 +785,12 @@ export default function Chat() {
   }
 
   const isEmpty = chat.messages.length === 0;
+
+  // ── Starter prompt pick — sets input and focuses textarea; does not send ──
+  function handlePickPrompt(prompt: string) {
+    setInput(prompt);
+    textareaRef.current?.focus();
+  }
 
   // ── Derived ──────────────────────────────────────────────────────────────
   const canSend =
@@ -947,7 +992,7 @@ export default function Chat() {
             <div className="flex-1" />
 
             {/* Model picker — only in chat mode; agent picks its own model */}
-            {view === "chat" && <ModelPicker value={model} onChange={setModel} onUpgrade={handleUpgrade} />}
+            {view === "chat" && <ModelPicker value={model} onChange={setModel} onUpgrade={handleUpgrade} tier={tier} />}
 
             {/* Memory indicator + toggle — only in chat mode */}
             {jwt && view === "chat" && (
@@ -996,6 +1041,33 @@ export default function Chat() {
               </button>
             )}
           </header>
+
+          {/* Upgrade error alert — auto-dismissed after 8 s */}
+          {upgradeError && (
+            <div
+              role="alert"
+              className="mx-4 mt-2 flex items-start justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/8 px-4 py-3 text-sm text-destructive"
+            >
+              <span>{upgradeError}</span>
+              <div className="flex shrink-0 items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleUpgrade}
+                  className="text-xs font-medium underline underline-offset-2 hover:opacity-80 transition-opacity"
+                >
+                  Try again
+                </button>
+                <button
+                  type="button"
+                  aria-label="Dismiss error"
+                  onClick={() => setUpgradeError(null)}
+                  className="text-destructive/60 hover:text-destructive transition-colors"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Content area: compare / agent / chat */}
           {view === "compare" ? (
@@ -1055,11 +1127,11 @@ export default function Chat() {
                       className={cn(
                         "hero-watermark",
                         "pointer-events-none select-none",
-                        "absolute left-0 top-1/2 z-[1]",
+                        "absolute top-1/2 z-[1]",
                         "hidden lg:block",
-                        "-translate-y-1/2 -translate-x-[38%]"
+                        "-translate-y-1/2 -rotate-90"
                       )}
-                      style={{ transformOrigin: "center center" }}
+                      style={{ left: "-140px" }}
                     >
                       <picture>
                         <source srcSet="/logos/tag-graffiti.webp" type="image/webp" />
@@ -1067,7 +1139,6 @@ export default function Chat() {
                           src="/logos/tag-graffiti.png"
                           alt=""
                           className="opacity-[0.09] h-[42vh] w-auto object-contain"
-                          style={{ transform: "rotate(-90deg)" }}
                           draggable={false}
                         />
                       </picture>
@@ -1105,7 +1176,7 @@ export default function Chat() {
                   <div className="relative z-10">
                     <div className="mx-auto w-full max-w-2xl px-4 py-6">
                       {isEmpty ? (
-                        <EmptyState />
+                        <EmptyState onPickPrompt={handlePickPrompt} />
                       ) : (
                         <div className="flex flex-col gap-6">
                           {chat.messages.map((msg) => {
@@ -1210,6 +1281,7 @@ export default function Chat() {
                     className="mx-auto flex max-w-2xl items-end gap-2 rounded-xl border border-border bg-background px-3 py-2.5 shadow-sm focus-within:border-primary/50 transition-colors"
                   >
                     <textarea
+                      ref={textareaRef}
                       className="flex-1 resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none disabled:opacity-50 leading-relaxed max-h-40"
                       placeholder={
                         !jwt && !turnstileToken && !anonSession

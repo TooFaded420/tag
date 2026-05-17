@@ -93,7 +93,7 @@ export function TurnstileGate({ onToken, onError }: Props) {
               window.turnstile.reset(widgetIdRef.current);
             }
           },
-          theme: "auto",
+          theme: "light",
           size: "flexible",
         });
         setStatus("ready");

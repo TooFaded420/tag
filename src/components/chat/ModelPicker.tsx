@@ -69,19 +69,27 @@ interface Props {
   value: string;
   onChange: (modelId: string) => void;
   onUpgrade?: () => void;
+  /** When provided by the parent (Chat.tsx), used directly — no internal auth subscription. */
+  tier?: "free" | "pro";
 }
 
-export function ModelPicker({ value, onChange, onUpgrade }: Props) {
-  const [tier, setTier] = useState<Tier>("anon");
+export function ModelPicker({ value, onChange, onUpgrade, tier: tierProp }: Props) {
+  // Internal tier state is only used when the parent does not pass `tier`.
+  // Chat.tsx always passes it, so the subscription below is a dead path in that context.
+  const [tierInternal, setTierInternal] = useState<Tier>("anon");
+  const tier: Tier = tierProp ?? tierInternal;
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
+    // Skip internal auth subscription when parent supplies tier directly.
+    if (tierProp !== undefined) return;
+
     let mounted = true;
 
     const loadTier = async () => {
       const { data: session } = await supabase.auth.getSession();
       if (!session.session?.user?.id) {
-        if (mounted) setTier("anon");
+        if (mounted) setTierInternal("anon");
         return;
       }
       try {
@@ -91,9 +99,9 @@ export function ModelPicker({ value, onChange, onUpgrade }: Props) {
           .select("tier")
           .eq("id", session.session.user.id)
           .maybeSingle();
-        if (mounted) setTier(((data as any)?.tier ?? "free") as Tier);
+        if (mounted) setTierInternal(((data as any)?.tier ?? "free") as Tier);
       } catch {
-        if (mounted) setTier("free");
+        if (mounted) setTierInternal("free");
       }
     };
 
@@ -103,7 +111,7 @@ export function ModelPicker({ value, onChange, onUpgrade }: Props) {
       mounted = false;
       sub.subscription.unsubscribe();
     };
-  }, []);
+  }, [tierProp]);
 
   const selectedModel = MODELS.find((m) => m.id === value) ?? MODELS[0];
 
