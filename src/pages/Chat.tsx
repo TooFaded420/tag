@@ -859,11 +859,13 @@ export default function Chat() {
   useEffect(() => {
     const prev = prevJwtRef.current;
     prevJwtRef.current = jwt;
-    if (!prev && jwt) {
+    // Any change TO a truthy jwt — covers null→new (first login),
+    // stale→new (post-expired re-login, since we no longer auto-signOut),
+    // and silent refresh. Idempotent: setMessages is a no-op when there's
+    // no orphan; clearing showError is safe.
+    if (prev !== jwt && jwt) {
       setShowError(false);
       hasSentThisSessionRef.current = false;
-      // Drop trailing user message if no assistant response followed it
-      // (i.e. the message that 401'd on the stale session).
       chat.setMessages((msgs) => {
         if (msgs.length === 0) return msgs;
         const last = msgs[msgs.length - 1];
