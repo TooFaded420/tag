@@ -1410,22 +1410,119 @@ export default function Chat() {
                   </div>
                 </div>
 
-                {/* Error banner — relative z-10 so the hero watermark (z-1) doesn't cover it.
-                    showError is cleared as soon as the next send begins streaming so
-                    stale banners don't persist between successful messages. */}
-                {chat.error && showError && (
-                  <div className="relative z-10 mx-4 mb-2 rounded-md border border-destructive bg-destructive/10 px-4 py-3">
-                    <p className="text-sm text-destructive">{chat.error.message}</p>
-                    <button
-                      type="button"
-                      onClick={() => setShowError(false)}
-                      aria-label="Dismiss error"
-                      className="absolute right-2 top-2 rounded p-0.5 text-destructive/60 hover:text-destructive transition-colors"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                )}
+                {/* Error banner — classified by the message text so we can
+                    show brand-aligned copy + a recovery CTA instead of a flat
+                    red rectangle. relative z-10 so the hero watermark (z-1)
+                    doesn't cover it. showError clears as the next send streams. */}
+                {chat.error && showError && (() => {
+                  const raw = chat.error.message ?? "";
+                  const lc = raw.toLowerCase();
+                  const isQuota = lc.includes("quota") || lc.includes("daily limit") || lc.includes("rate limit");
+                  const isUpstream = lc.startsWith("upstream") || lc.includes("upstream error");
+                  const isAuth = lc.includes("jwt") || lc.includes("session expired") || lc.includes("sign in again");
+                  const isModel = lc.includes("model not allowed") || lc.includes("not allowed for your tier");
+
+                  const headline = isQuota
+                    ? (jwt ? (tier === "pro" ? "You hit today's premium cap." : "Daily messages used up.") : "Anon daily limit hit.")
+                    : isUpstream ? "Upstream model hiccup."
+                    : isAuth    ? "Session expired."
+                    : isModel   ? "That model's behind the Pro paywall."
+                    :             "Something went sideways.";
+
+                  const subline = isQuota
+                    ? (jwt
+                        ? (tier === "pro"
+                            ? "Resets at midnight UTC. Or bring your own key for unlimited."
+                            : "Upgrade to Pro for 50 standard + 100 premium messages a day.")
+                        : "Sign in (free) for 50/day and persistent memory.")
+                    : isUpstream ? "Synthetic.new burped. Retry usually works."
+                    : isAuth    ? "Sign in again to keep chatting."
+                    : isModel   ? "Upgrade to Pro to unlock it, or pick a free model."
+                    :             raw.slice(0, 240);
+
+                  return (
+                    <div className="relative z-10 mx-4 mb-2 overflow-hidden rounded-lg border border-destructive/30 bg-gradient-to-br from-destructive/10 via-destructive/5 to-transparent">
+                      {/* Brand splatter accent — tiny, top-right */}
+                      <div
+                        aria-hidden
+                        className="pointer-events-none absolute -right-4 -top-4 h-16 w-16 rounded-full bg-primary/20 blur-2xl"
+                      />
+                      <div className="relative flex items-start gap-3 px-4 py-3 pr-10">
+                        <div className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-destructive/15 text-destructive">
+                          <span className="font-mono text-[11px]">!</span>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-foreground leading-snug">
+                            {headline}
+                          </p>
+                          <p className="mt-0.5 text-xs text-muted-foreground leading-relaxed">
+                            {subline}
+                          </p>
+
+                          {/* Action row — contextual recovery CTA */}
+                          {(isQuota && (!jwt || tier !== "pro")) || isModel ? (
+                            <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                              {!jwt ? (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await supabase.auth.signInWithOAuth({
+                                      provider: "google",
+                                      options: { redirectTo: window.location.origin + "/chat" },
+                                    });
+                                  }}
+                                  className="inline-flex items-center gap-1 rounded-full bg-foreground px-3 py-1 text-[11px] font-medium text-background hover:opacity-90 transition-opacity"
+                                >
+                                  <LogIn className="h-3 w-3" />
+                                  Sign in — free
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={handleUpgrade}
+                                  className="inline-flex items-center gap-1 rounded-full bg-primary px-3 py-1 text-[11px] font-medium text-primary-foreground hover:opacity-90 transition-opacity"
+                                >
+                                  <Crown className="h-3 w-3" />
+                                  Upgrade to Pro · $7/mo
+                                </button>
+                              )}
+                              <a
+                                href="/chat/pricing"
+                                className="text-[11px] text-muted-foreground hover:text-foreground transition-colors underline-offset-2 hover:underline"
+                              >
+                                Compare plans
+                              </a>
+                            </div>
+                          ) : isAuth ? (
+                            <div className="mt-2.5">
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  await supabase.auth.signInWithOAuth({
+                                    provider: "google",
+                                    options: { redirectTo: window.location.origin + "/chat" },
+                                  });
+                                }}
+                                className="inline-flex items-center gap-1 rounded-full bg-foreground px-3 py-1 text-[11px] font-medium text-background hover:opacity-90 transition-opacity"
+                              >
+                                <LogIn className="h-3 w-3" />
+                                Sign in again
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowError(false)}
+                          aria-label="Dismiss"
+                          className="absolute right-2 top-2 rounded p-1 text-muted-foreground/60 hover:text-foreground hover:bg-muted/60 transition-colors"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Turnstile gate removed (T3-style anon flow). Anon users
                     can chat immediately; IP rate limit (10/day) is the only
