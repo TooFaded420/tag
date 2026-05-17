@@ -722,10 +722,12 @@ export default function Chat() {
               pendingAnonResendRef.current = latestUserContent;
             }
           }
-          // On 401 with stale JWT that wouldn't refresh, sign out so the user
-          // hits the sign-in flow instead of a permanent error loop.
+          // On 401 with stale JWT that wouldn't refresh: surface the banner
+          // and let the user click "Sign in again" which initiates a fresh
+          // OAuth round-trip. We deliberately DO NOT auto-signOut here —
+          // the previous implementation raced with refreshSession and left
+          // the page in a "spam Session expired even after re-login" loop.
           if (response.status === 401 && lc.includes("jwt")) {
-            await supabase.auth.signOut();
             errMsg = "Your session expired. Please sign in again.";
           }
         } catch {}
@@ -823,6 +825,30 @@ export default function Chat() {
       setShowError(false);
     }
   }, [chat.status]);
+
+  // After a successful re-login, drop the stale "Session expired" banner AND
+  // any orphan user message left over from the rejected send. Without this,
+  // chat.error sticks around in useChat state and the banner re-renders on
+  // every interaction — "spamming Session expired even after re-login".
+  // Trigger: jwt transitions from null → truthy.
+  const prevJwtRef = useRef<string | null>(jwt);
+  useEffect(() => {
+    const prev = prevJwtRef.current;
+    prevJwtRef.current = jwt;
+    if (!prev && jwt) {
+      setShowError(false);
+      hasSentThisSessionRef.current = false;
+      // Drop trailing user message if no assistant response followed it
+      // (i.e. the message that 401'd on the stale session).
+      chat.setMessages((msgs) => {
+        if (msgs.length === 0) return msgs;
+        const last = msgs[msgs.length - 1];
+        if (last?.role === "user") return msgs.slice(0, -1);
+        return msgs;
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jwt]);
 
   // ── Auto-scroll ─────────────────────────────────────────────────────────
   useEffect(() => {
