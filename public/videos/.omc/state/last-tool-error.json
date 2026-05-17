@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"cd \\\"C:\\\\Users\\\\jrlop\\\\OneDrive\\\\Documents\\\\GitHub\\\\hecz\\\" && git pull --rebase && git push origin main\",\"description\":\"Pull rebase then push to main\"}",
-  "error": "Exit code 128\nerror: cannot pull with rebase: You have unstaged changes.\nerror: Please commit or stash them.",
-  "timestamp": "2026-05-16T16:14:14.109Z",
-  "retry_count": 1
-}

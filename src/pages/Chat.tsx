@@ -8,6 +8,7 @@ import {
   Crown,
   Key,
   Lock,
+  LogIn,
   Menu,
   MessageSquarePlus,
   Send,
@@ -934,11 +935,12 @@ export default function Chat() {
   }
 
   // ── Derived ──────────────────────────────────────────────────────────────
+  // Anon now allowed unconditionally (IP rate limit + Cloudflare DDoS in front
+  // of Supabase replaces the per-message Turnstile gate).
   const canSend =
     chat.status !== "streaming" &&
     chat.status !== "submitted" &&
-    input.trim().length > 0 &&
-    (!!jwt || !!turnstileToken || !!anonSession);
+    input.trim().length > 0;
 
   // ---------------------------------------------------------------------------
   // Render
@@ -1048,8 +1050,35 @@ export default function Chat() {
               )}
             </nav>
 
-            {/* Sidebar footer tagline */}
-            <div className="px-3 pb-3 border-t border-border/40 pt-2">
+            {/* Sidebar footer — Login / Account + tagline */}
+            <div className="px-3 pb-3 border-t border-border/40 pt-2 space-y-2">
+              {jwt ? (
+                <a
+                  href="/chat/account"
+                  className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                >
+                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary/15 text-[10px] font-medium text-primary">
+                    {userId?.slice(0, 1).toUpperCase() ?? "•"}
+                  </span>
+                  <span className="truncate">
+                    Account {tier === "pro" && <span className="text-primary font-medium">· Pro</span>}
+                  </span>
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await supabase.auth.signInWithOAuth({
+                      provider: "google",
+                      options: { redirectTo: window.location.origin + "/chat" },
+                    });
+                  }}
+                  className="w-full flex items-center justify-center gap-2 rounded-md border border-border bg-card px-2 py-2 text-xs font-medium text-foreground hover:bg-muted transition-colors"
+                >
+                  <LogIn className="h-3.5 w-3.5" />
+                  Login
+                </button>
+              )}
               <p className="text-[10px] text-muted-foreground/40 leading-relaxed">
                 Tag every model.
                 <br />
@@ -1398,15 +1427,10 @@ export default function Chat() {
                   </div>
                 )}
 
-                {/* Turnstile gate — relative z-10 for same reason. Without this the
-                    watermark (absolute top-0 right-0 max-h-50vh z-1) visually covers
-                    the gate's render area, leaving anon users with no widget to click.
-                    Hidden once the user has a valid anon session or in-memory token. */}
-                {!jwt && !turnstileToken && !anonSession && (
-                  <div className="relative z-10 mx-4 mb-2">
-                    <TurnstileGate onToken={setTurnstileToken} />
-                  </div>
-                )}
+                {/* Turnstile gate removed (T3-style anon flow). Anon users
+                    can chat immediately; IP rate limit (10/day) is the only
+                    anti-abuse. Login CTA in sidebar handles the upgrade
+                    funnel. */}
 
                 {/* Sticky composer */}
                 <div className="shrink-0 border-t border-border bg-card px-4 py-3">
@@ -1424,11 +1448,7 @@ export default function Chat() {
                     <textarea
                       ref={textareaRef}
                       className="flex-1 resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none disabled:opacity-50 leading-relaxed max-h-40"
-                      placeholder={
-                        !jwt && !turnstileToken && !anonSession
-                          ? "Complete verification above to chat…"
-                          : "Message Tag…"
-                      }
+                      placeholder="Message Tag…"
                       rows={1}
                       value={input}
                       onChange={(e) => {
@@ -1436,7 +1456,6 @@ export default function Chat() {
                         e.target.style.height = "auto";
                         e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
                       }}
-                      disabled={!jwt && !turnstileToken && !anonSession}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();

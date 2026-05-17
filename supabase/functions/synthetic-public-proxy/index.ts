@@ -372,94 +372,15 @@ serve(async (req) => {
   // Request-level timer for structured observability logs
   const reqStart = Date.now();
 
-  // ── Turnstile verification (anon path only) ───────────────────────────────
-  // After a successful Turnstile verify we issue a 30-min HMAC session token
-  // so the client can skip re-verification on subsequent messages.
-  let newAnonSessionToken: string | null = null;
-
-  if (!userId) {
-    const turnstileSecret = Deno.env.get("TURNSTILE_SECRET_KEY");
-    if (!turnstileSecret) {
-      console.error("TURNSTILE_SECRET_KEY not set — rejecting anon request");
-      return errorResponse(
-        {
-          error: "Turnstile not configured",
-          hint: "Set TURNSTILE_SECRET_KEY in Supabase project secrets dashboard",
-        },
-        503,
-      );
-    }
-
-    const ipHash = await sha256(ip);
-
-    // Fast path: reuse an existing valid anon session token.
-    if (body.anon_session_token) {
-      const valid = await verifyAnonSession(body.anon_session_token, ipHash);
-      if (!valid) {
-        return errorResponse(
-          { error: "Verify you are human, then we'll keep you signed in for 30 minutes." },
-          400,
-        );
-      }
-      // Session is valid — skip Turnstile entirely.
-    } else {
-      // Slow path: require a fresh Turnstile token.
-      if (!body.turnstile_token) {
-        return errorResponse(
-          { error: "Verify you are human, then we'll keep you signed in for 30 minutes." },
-          400,
-        );
-      }
-
-      const tsRes = await fetch(
-        "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            secret: turnstileSecret,
-            response: body.turnstile_token,
-            remoteip: ip,
-          }),
-        },
-      );
-      const tsData = await tsRes.json();
-      if (!tsData.success) {
-        logRequest({
-          route: "synthetic-public-proxy",
-          status: "turnstile_failed",
-          start: reqStart,
-          tier: "anon",
-          model: body.model,
-          upstream_latency_ms: -1,
-          ip_hash: (await sha256(ip)).slice(0, 8),
-        });
-        return errorResponse({ error: "Turnstile verification failed" }, 403);
-      }
-
-      // Validate hostname — accept production domain or localhost for dev.
-      const expectedHostname = Deno.env.get("TURNSTILE_EXPECTED_HOSTNAME") ?? "hecz.dev";
-      if (tsData.hostname && tsData.hostname !== expectedHostname && tsData.hostname !== "localhost") {
-        return errorResponse({ error: "turnstile_hostname_mismatch" }, 403);
-      }
-
-      // Validate action — must exactly match what TurnstileGate.tsx sends.
-      if (tsData.action && tsData.action !== "anon_chat") {
-        return errorResponse({ error: "turnstile_action_mismatch" }, 403);
-      }
-
-      // Issue a new 30-min session token so the client avoids re-verifying.
-      try {
-        newAnonSessionToken = await signAnonSession({
-          ip_hash: ipHash,
-          expires_at: Date.now() + ANON_SESSION_TTL_MS,
-        });
-      } catch (err) {
-        // Non-fatal: log and continue without issuing a session token.
-        console.warn("signAnonSession failed:", err instanceof Error ? err.message : err);
-      }
-    }
-  }
+  // ── Anon path: IP rate-limit only (T3-style, no captcha) ───────────────────
+  // Cloudflare sits in front of Supabase already for DDoS, and anon quota is
+  // capped at 10 msg/day per IP (TIER_LIMITS.anon below). Turnstile was adding
+  // friction and bugs without much net protection. See commit message for the
+  // product trade-off. The Turnstile signing helpers above are kept (dead code
+  // for now) so they're a one-grep away if abuse forces us to re-enable.
+  const newAnonSessionToken: string | null = null;
+  void body.turnstile_token;
+  void body.anon_session_token;
 
   // ── Tier resolution ───────────────────────────────────────────────────────
   const tier = await getUserTier(supabase, userId);
