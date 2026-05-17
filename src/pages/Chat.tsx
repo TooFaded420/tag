@@ -11,6 +11,7 @@ import {
   Menu,
   MessageSquarePlus,
   Send,
+  Terminal,
   Trash2,
   X,
 } from "lucide-react";
@@ -20,6 +21,7 @@ import { BYOKDrawer, readBYOKKeys } from "@/components/chat/BYOKDrawer";
 import { TurnstileGate } from "@/components/chat/TurnstileGate";
 import { MemoryPanel } from "@/components/chat/MemoryPanel";
 import { CompareView } from "@/components/chat/CompareView";
+import { AgentView } from "@/components/chat/AgentView";
 import { FileDropzone } from "@/components/chat/FileDropzone";
 import { SkinPicker, useChatSkin } from "@/components/chat/SkinPicker";
 import type { Message } from "@ai-sdk/react";
@@ -355,7 +357,7 @@ export default function Chat() {
     try { return localStorage.getItem(ANON_SESSION_KEY); } catch { return null; }
   });
   const [memoryActive, setMemoryActive] = useState(false);
-  const [view, setView] = useState<"chat" | "compare">("chat");
+  const [view, setView] = useState<"chat" | "compare" | "agent">("chat");
   const [pendingFileNote, setPendingFileNote] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
@@ -922,15 +924,32 @@ export default function Chat() {
                 Compare
                 {tier !== "pro" && <Lock className="h-3 w-3" />}
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (tier !== "pro") { handleUpgrade(); return; }
+                  setView("agent");
+                }}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors",
+                  view === "agent"
+                    ? "bg-primary text-primary-foreground"
+                    : "border border-border text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                <Terminal className="h-3 w-3" />
+                Agent
+                {tier !== "pro" && <Lock className="h-3 w-3" />}
+              </button>
             </div>
 
             {/* Spacer */}
             <div className="flex-1" />
 
-            {/* Model picker — only in chat mode */}
+            {/* Model picker — only in chat mode; agent picks its own model */}
             {view === "chat" && <ModelPicker value={model} onChange={setModel} onUpgrade={handleUpgrade} />}
 
-            {/* Memory indicator + toggle */}
+            {/* Memory indicator + toggle — only in chat mode */}
             {jwt && view === "chat" && (
               <button
                 type="button"
@@ -978,7 +997,7 @@ export default function Chat() {
             )}
           </header>
 
-          {/* Content area: compare mode or chat */}
+          {/* Content area: compare / agent / chat */}
           {view === "compare" ? (
             <div className="flex-1 overflow-y-auto p-4">
               <CompareView
@@ -987,6 +1006,10 @@ export default function Chat() {
                 byokKeys={byokKeys}
                 onUpgrade={handleUpgrade}
               />
+            </div>
+          ) : view === "agent" ? (
+            <div className="flex flex-1 min-h-0 overflow-hidden">
+              <AgentView jwt={jwt} tier={tier} onUpgrade={handleUpgrade} />
             </div>
           ) : (
             /* Chat layout: messages + memory panel */
