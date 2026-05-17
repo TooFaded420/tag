@@ -430,10 +430,30 @@ export default function Chat() {
 
   // ── Auth ────────────────────────────────────────────────────────────────
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setUserId(data.session?.user?.id ?? null);
-      setJwt(data.session?.access_token ?? null);
-    });
+    // Refresh stale access tokens on mount. Supabase auto-refresh in the
+    // background does not always run after tab inactivity, so we kick it
+    // explicitly to avoid users returning to /chat with an expired JWT and
+    // getting "Invalid or expired JWT" from the proxy.
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      if (data.session) {
+        // Token close to expiry → refresh proactively. Supabase access tokens
+        // default to 1 hour; if more than 50 minutes elapsed since issuance,
+        // refresh.
+        const expiresAt = (data.session.expires_at ?? 0) * 1000;
+        const timeLeftMs = expiresAt - Date.now();
+        if (timeLeftMs < 10 * 60 * 1000) {
+          const { data: refreshed } = await supabase.auth.refreshSession();
+          if (refreshed.session) {
+            setUserId(refreshed.session.user?.id ?? null);
+            setJwt(refreshed.session.access_token ?? null);
+            return;
+          }
+        }
+        setUserId(data.session.user?.id ?? null);
+        setJwt(data.session.access_token ?? null);
+      }
+    })();
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
       setUserId(session?.user?.id ?? null);
       setJwt(session?.access_token ?? null);
@@ -611,6 +631,29 @@ export default function Chat() {
         });
       }
 
+      // On 401 from Supabase gateway (expired JWT), try refreshing the session
+      // once and retry the request. If refresh succeeds, the new JWT lands in
+      // jwtRef via the auth state change listener before we re-fetch.
+      if (response.status === 401 && jwtRef.current) {
+        try {
+          const { data: refreshed } = await supabase.auth.refreshSession();
+          if (refreshed.session?.access_token) {
+            jwtRef.current = refreshed.session.access_token;
+            setJwt(refreshed.session.access_token);
+            // Reissue the request with the refreshed JWT in the header.
+            const retryHeaders = new Headers(init?.headers as HeadersInit | undefined);
+            retryHeaders.set("Authorization", `Bearer ${refreshed.session.access_token}`);
+            response = await fetch(input as RequestInfo, {
+              ...init,
+              headers: retryHeaders,
+              body: JSON.stringify({ ...reqBody, messages: finalMessages, model }),
+            });
+          }
+        } catch {
+          // refresh failed — fall through to error path
+        }
+      }
+
       if (!response.ok) {
         let errMsg = "Chat request failed";
         try {
@@ -620,10 +663,16 @@ export default function Chat() {
           // stuck in a loop. Server returns "Verify you are human…" for expired
           // sessions which doesn't contain "turnstile" — match broader set.
           const lc = errMsg.toLowerCase();
-          if (!jwt && (lc.includes("turnstile") || lc.includes("verify") || lc.includes("session") || lc.includes("human"))) {
+          if (!jwtRef.current && (lc.includes("turnstile") || lc.includes("verify") || lc.includes("session") || lc.includes("human"))) {
             setTurnstileToken(null);
             setAnonSession(null);
             try { localStorage.removeItem(ANON_SESSION_KEY); } catch {}
+          }
+          // On 401 with stale JWT that wouldn't refresh, sign out so the user
+          // hits the sign-in flow instead of a permanent error loop.
+          if (response.status === 401 && lc.includes("jwt")) {
+            await supabase.auth.signOut();
+            errMsg = "Your session expired. Please sign in again.";
           }
         } catch {}
         throw new Error(errMsg);
