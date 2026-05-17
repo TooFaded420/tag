@@ -394,6 +394,20 @@ export default function Chat() {
   // Track if user has actively sent during THIS session — guards the error banner
   // against stale chat.error rehydrated from restored threads on page mount.
   const hasSentThisSessionRef = useRef(false);
+
+  // Mirror state to refs so the chat transport (constructed ONCE on mount)
+  // can read live values at request time instead of capturing stale snapshots.
+  // Without this, jwt/turnstileToken/anonSession/model captured on first render
+  // (when Supabase Auth was still resolving) get baked into the transport and
+  // every send goes out as anon-with-no-token → 400 "Verify you are human".
+  const jwtRef = useRef(jwt);
+  const turnstileTokenRef = useRef(turnstileToken);
+  const anonSessionRef = useRef(anonSession);
+  const modelRef = useRef(model);
+  useEffect(() => { jwtRef.current = jwt; }, [jwt]);
+  useEffect(() => { turnstileTokenRef.current = turnstileToken; }, [turnstileToken]);
+  useEffect(() => { anonSessionRef.current = anonSession; }, [anonSession]);
+  useEffect(() => { modelRef.current = model; }, [model]);
   const [showProWelcome, setShowProWelcome] = useState(() => {
     try {
       if (localStorage.getItem(PRO_WELCOMED_KEY)) return false;
@@ -481,12 +495,16 @@ export default function Chat() {
     initialMessages,
     transport: new DefaultChatTransport({
       api: PROXY_URL,
-      headers: jwt ? { Authorization: `Bearer ${jwt}` } : undefined,
-      body: {
-        model,
-        turnstile_token: jwt ? undefined : turnstileToken,
-        anon_session_token: jwt ? undefined : anonSession,
-      },
+      // Functions are evaluated at request time, reading the latest ref values.
+      // Object form would capture the values at transport-construction time
+      // (initial mount), before Supabase Auth resolves the session.
+      headers: () =>
+        jwtRef.current ? { Authorization: `Bearer ${jwtRef.current}` } : {},
+      body: () => ({
+        model: modelRef.current,
+        turnstile_token: jwtRef.current ? undefined : turnstileTokenRef.current,
+        anon_session_token: jwtRef.current ? undefined : anonSessionRef.current,
+      }),
       fetch: async (input, init) => {
       const reqBody = init?.body ? JSON.parse(init.body as string) : {};
 
