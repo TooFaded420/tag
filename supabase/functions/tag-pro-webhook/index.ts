@@ -158,6 +158,111 @@ serve(async (req: Request) => {
     } else {
       console.log(`tag-pro-webhook: User ${userId} upgraded to pro`);
     }
+
+    // ── Send welcome email (fire-and-forget — never rolls back tier flip) ───
+    try {
+      const mailerooKey = Deno.env.get("MAILEROO_API_KEY");
+      if (!mailerooKey) {
+        console.error("tag-pro-webhook: MAILEROO_API_KEY not configured — skipping welcome email");
+      } else {
+        // Fetch user email via admin API
+        const { data: userData, error: userError } = await supabase.auth.admin.getUserById(userId);
+        if (userError || !userData?.user?.email) {
+          console.error("tag-pro-webhook: Could not fetch user email for welcome", userError);
+        } else {
+          const toEmail = userData.user.email;
+          const htmlBody = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Welcome to Tag Pro</title>
+  <style>
+    body { margin: 0; padding: 0; background: #FAF8F5; font-family: 'Space Grotesk', Arial, sans-serif; color: #1a1a1a; }
+    .wrapper { max-width: 560px; margin: 40px auto; background: #fff; border-radius: 12px; border: 1px solid #e8e3dc; overflow: hidden; }
+    .header { background: #8B7DA8; padding: 32px 40px 24px; }
+    .header h1 { margin: 0; font-size: 28px; font-weight: 700; color: #fff; letter-spacing: -0.5px; }
+    .header .crown { font-size: 22px; margin-bottom: 8px; }
+    .body { padding: 32px 40px; }
+    .body p { font-size: 15px; line-height: 1.65; color: #3a3530; margin: 0 0 20px; }
+    .body ul { padding-left: 20px; margin: 0 0 20px; }
+    .body ul li { font-size: 15px; line-height: 1.65; color: #3a3530; margin-bottom: 6px; }
+    .cta { display: inline-block; margin: 8px 0 24px; background: #8B7DA8; color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 999px; font-size: 14px; font-weight: 600; }
+    .signoff { font-size: 14px; color: #6b6360; border-top: 1px solid #e8e3dc; padding-top: 20px; margin-top: 8px; }
+    .signoff a { color: #8B7DA8; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="header">
+      <div class="crown">👑</div>
+      <h1>Welcome to Tag Pro</h1>
+    </div>
+    <div class="body">
+      <p>Your $7 just unlocked the good models.</p>
+      <ul>
+        <li><strong>Kimi-K2.6, GLM-5.1, MiniMax-M2.5, and Nemotron</strong> — the premium fleet is yours.</li>
+        <li><strong>Multi-model compare</strong> — run the same prompt side-by-side across models.</li>
+        <li><strong>100 premium messages/day</strong> — no more throttle when you bring your own keys.</li>
+        <li><strong>Memory</strong> — context that follows you across sessions.</li>
+        <li><strong>File uploads</strong> — drop in a doc and chat with it.</li>
+      </ul>
+      <p>The model picker is in the top bar. Premium models are marked — just select one and go.</p>
+      <a class="cta" href="https://hecz.dev/chat">Open Tag &rarr;</a>
+      <div class="signoff">
+        <p>JR — Tag is open source at <a href="https://github.com/TooFaded420/tag">github.com/TooFaded420/tag</a> if you want to fork it or self-host.</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
+
+          const textBody = `Welcome to Tag Pro
+
+Your $7 just unlocked the good models.
+
+- Kimi-K2.6, GLM-5.1, MiniMax-M2.5, and Nemotron — the premium fleet is yours.
+- Multi-model compare — run the same prompt side-by-side across models.
+- 100 premium messages/day — no throttle when you bring your own keys.
+- Memory — context that follows you across sessions.
+- File uploads — drop in a doc and chat with it.
+
+Open chat at https://hecz.dev/chat — model picker is in the top bar.
+
+—
+
+JR — Tag is open source at https://github.com/TooFaded420/tag if you want to fork it or self-host.`;
+
+          const emailPayload = {
+            from: "hello@hecz.dev",
+            from_name: "Tag",
+            to: toEmail,
+            subject: "Welcome to Tag Pro — your $7 just unlocked the good models",
+            html: htmlBody,
+            plaintext: textBody,
+          };
+
+          const emailRes = await fetch("https://api.maileroo.com/v2/emails/send", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-API-Key": mailerooKey,
+            },
+            body: JSON.stringify(emailPayload),
+          });
+
+          if (!emailRes.ok) {
+            const errText = await emailRes.text().catch(() => "(unreadable)");
+            console.error(`tag-pro-webhook: Welcome email failed (${emailRes.status}): ${errText}`);
+          } else {
+            console.log(`tag-pro-webhook: Welcome email sent to ${toEmail}`);
+          }
+        }
+      }
+    } catch (emailErr) {
+      // Email failure must never roll back the tier upgrade
+      console.error("tag-pro-webhook: Unexpected error sending welcome email:", emailErr);
+    }
   } else if (
     event.type === "customer.subscription.deleted" ||
     (event.type === "customer.subscription.updated" &&

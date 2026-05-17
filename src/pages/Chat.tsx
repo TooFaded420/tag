@@ -27,6 +27,103 @@ import type { Message } from "@ai-sdk/react";
 const MessageContent = lazy(() => import("@/components/chat/MessageContent"));
 
 // ---------------------------------------------------------------------------
+// Pro welcome modal
+// ---------------------------------------------------------------------------
+
+const PRO_WELCOMED_KEY = "tag_pro_welcomed_v1";
+
+function ProWelcomeModal({ onDismiss }: { onDismiss: () => void }) {
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        className="fixed inset-0 z-50 bg-foreground/30 backdrop-blur-[2px] animate-[pro-fade-in_0.25s_ease-out]"
+        aria-hidden
+      />
+
+      {/* Modal card */}
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="You're on Pro"
+        className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      >
+        <div className="relative w-full max-w-md rounded-2xl border border-border bg-card shadow-xl overflow-hidden animate-[pro-slide-up_0.3s_cubic-bezier(0.34,1.56,0.64,1)]">
+          {/* Confetti burst — pure CSS SVG, fades out after 2.5 s */}
+          <svg
+            aria-hidden
+            className="pointer-events-none absolute inset-0 w-full h-full animate-[pro-confetti_2.5s_ease-out_forwards]"
+            viewBox="0 0 400 260"
+            fill="none"
+          >
+            {/* scattered dots in brand colours */}
+            <circle cx="60"  cy="30"  r="5" fill="#8B7DA8" opacity="0.9" />
+            <circle cx="120" cy="15"  r="4" fill="#B0A3C4" opacity="0.8" />
+            <circle cx="200" cy="10"  r="6" fill="#8B7DA8" opacity="0.85" />
+            <circle cx="280" cy="18"  r="4" fill="#5EEAD4" opacity="0.8" />
+            <circle cx="340" cy="28"  r="5" fill="#B0A3C4" opacity="0.75" />
+            <circle cx="40"  cy="70"  r="3" fill="#5EEAD4" opacity="0.7" />
+            <circle cx="360" cy="65"  r="3" fill="#8B7DA8" opacity="0.7" />
+            <circle cx="90"  cy="50"  r="3" fill="#B0A3C4" opacity="0.65" />
+            <circle cx="310" cy="45"  r="4" fill="#5EEAD4" opacity="0.6" />
+            <rect   x="155" y="8"  width="6" height="6" rx="1" fill="#8B7DA8" opacity="0.8" transform="rotate(20 155 8)" />
+            <rect   x="240" y="12" width="5" height="5" rx="1" fill="#5EEAD4" opacity="0.75" transform="rotate(-15 240 12)" />
+            <rect   x="78"  y="38" width="4" height="4" rx="1" fill="#B0A3C4" opacity="0.7" transform="rotate(35 78 38)" />
+            <rect   x="320" y="55" width="5" height="5" rx="1" fill="#8B7DA8" opacity="0.65" transform="rotate(-25 320 55)" />
+          </svg>
+
+          {/* Header strip */}
+          <div className="flex items-center gap-3 bg-primary px-6 py-5">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary-foreground/15">
+              <Crown className="h-5 w-5 text-primary-foreground" />
+            </span>
+            <h2
+              className="text-xl font-bold text-primary-foreground"
+              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+            >
+              You're on Pro.
+            </h2>
+          </div>
+
+          {/* Body */}
+          <div className="px-6 py-5">
+            <ul className="space-y-2.5 text-sm text-foreground">
+              <li className="flex items-start gap-2.5">
+                <span className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+                <span><strong>Premium models unlocked</strong> — Kimi-K2.6, GLM-5.1, MiniMax-M2.5, Nemotron.</span>
+              </li>
+              <li className="flex items-start gap-2.5">
+                <span className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+                <span><strong>Multi-model compare</strong> — run the same prompt across models side-by-side.</span>
+              </li>
+              <li className="flex items-start gap-2.5">
+                <span className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+                <span><strong>File uploads</strong> — drop in a doc and chat with its contents.</span>
+              </li>
+              <li className="flex items-start gap-2.5">
+                <span className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+                <span><strong>Memory</strong> — context that follows you across sessions.</span>
+              </li>
+            </ul>
+          </div>
+
+          {/* Footer */}
+          <div className="px-6 pb-6">
+            <button
+              type="button"
+              onClick={onDismiss}
+              className="w-full rounded-full bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground hover:opacity-90 transition-opacity"
+            >
+              Got it
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -263,6 +360,14 @@ export default function Chat() {
   const [input, setInput] = useState("");
   const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
   const [showError, setShowError] = useState(false);
+  const [showProWelcome, setShowProWelcome] = useState(() => {
+    try {
+      if (localStorage.getItem(PRO_WELCOMED_KEY)) return false;
+      return new URLSearchParams(window.location.search).get("pro") === "success";
+    } catch {
+      return false;
+    }
+  });
 
   // ── Sidebar / thread state ──────────────────────────────────────────────
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -311,6 +416,20 @@ export default function Chat() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jwt]);
+
+  // ── Pro welcome: auto-dismiss after 6 s, clean URL, persist flag ────────
+  useEffect(() => {
+    if (!showProWelcome) return;
+    // Persist so re-load with the same URL doesn't re-show
+    try { localStorage.setItem(PRO_WELCOMED_KEY, "1"); } catch {}
+    // Clear ?pro=success from URL immediately
+    const url = new URL(window.location.href);
+    url.searchParams.delete("pro");
+    window.history.replaceState({}, "", url.toString());
+    // Auto-dismiss after 6 s
+    const timer = setTimeout(() => setShowProWelcome(false), 6000);
+    return () => clearTimeout(timer);
+  }, [showProWelcome]);
 
   // userId tracked for T5/T6 usage display
   void userId;
@@ -1137,6 +1256,11 @@ export default function Chat() {
         onClose={() => setByokOpen(false)}
         onKeysChange={setByokKeys}
       />
+
+      {/* Pro welcome modal — shown once after checkout return */}
+      {showProWelcome && (
+        <ProWelcomeModal onDismiss={() => setShowProWelcome(false)} />
+      )}
     </>
   );
 }
