@@ -384,6 +384,10 @@ export default function Chat() {
   const [anonSession, setAnonSession] = useState<string | null>(() => {
     try { return localStorage.getItem(ANON_SESSION_KEY); } catch { return null; }
   });
+  // Text the user tried to send when the anon gate rejected the request.
+  // We cache it so the next captured Turnstile token can auto-resend it
+  // instead of forcing the user to retype.
+  const pendingAnonResendRef = useRef<string | null>(null);
   const [memoryActive, setMemoryActive] = useState(false);
   const [view, setView] = useState<"chat" | "compare" | "agent">("chat");
   const [pendingFileNote, setPendingFileNote] = useState<string | null>(null);
@@ -710,6 +714,12 @@ export default function Chat() {
             setTurnstileToken(null);
             setAnonSession(null);
             try { localStorage.removeItem(ANON_SESSION_KEY); } catch {}
+            // Cache the user's text so we can auto-resend it as soon as the
+            // Turnstile gate returns a new token — saves the user from
+            // retyping after every gate prompt.
+            if (latestUserContent) {
+              pendingAnonResendRef.current = latestUserContent;
+            }
           }
           // On 401 with stale JWT that wouldn't refresh, sign out so the user
           // hits the sign-in flow instead of a permanent error loop.
@@ -769,6 +779,20 @@ export default function Chat() {
       },
     }),
   });
+
+  // Auto-resend a previously failed anon message once a fresh Turnstile token
+  // (or anon session) arrives. Without this, every gate prompt eats the
+  // user's text and forces them to retype.
+  useEffect(() => {
+    if (!turnstileToken && !anonSession) return;
+    const pending = pendingAnonResendRef.current;
+    if (!pending) return;
+    if (chat.status === "streaming" || chat.status === "submitted") return;
+    pendingAnonResendRef.current = null;
+    hasSentThisSessionRef.current = true;
+    chat.sendMessage({ text: pending });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [turnstileToken, anonSession]);
 
   // ── Persist messages into active thread ────────────────────────────────
   useEffect(() => {

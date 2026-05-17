@@ -1,8 +1,18 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
+
+// Allow a small, safe set of inline HTML tags so model output that uses
+// `<br>` inside table cells (the only way to line-break inside markdown
+// tables) renders as actual breaks. Everything else is stripped.
+const sanitizeSchema = {
+  ...defaultSchema,
+  tagNames: [...(defaultSchema.tagNames ?? []), "br"],
+};
 
 // ---------------------------------------------------------------------------
 // CopyButton — used inside code blocks
@@ -38,6 +48,7 @@ export default function MessageContent({ content }: { content: string }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeRaw, [rehypeSanitize, sanitizeSchema]]}
       components={{
         // Code blocks + inline code
         code({ className, children, ...rest }) {
