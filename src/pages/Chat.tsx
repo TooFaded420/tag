@@ -659,6 +659,29 @@ export default function Chat() {
         try {
           const errData = await response.json();
           errMsg = errData?.error ?? errMsg;
+
+          // If proxy returns an upstream-failure envelope, surface the upstream
+          // status + a short snippet of the upstream body so the user (and us)
+          // can actually diagnose the failure. Without this, "upstream error"
+          // is a dead end.
+          if (errMsg === "upstream error") {
+            const upstreamStatus = errData?.status;
+            const detail = errData?.detail;
+            let detailMsg = "";
+            if (detail) {
+              if (typeof detail === "string") {
+                detailMsg = detail.slice(0, 200);
+              } else if (detail.error?.message) {
+                detailMsg = String(detail.error.message).slice(0, 200);
+              } else if (detail.message) {
+                detailMsg = String(detail.message).slice(0, 200);
+              } else {
+                detailMsg = JSON.stringify(detail).slice(0, 200);
+              }
+            }
+            errMsg = `Upstream ${upstreamStatus ?? "error"}${detailMsg ? `: ${detailMsg}` : " — no detail returned"}`;
+          }
+
           // Clear stale anon session on any auth-related 400 so the user isn't
           // stuck in a loop. Server returns "Verify you are human…" for expired
           // sessions which doesn't contain "turnstile" — match broader set.
