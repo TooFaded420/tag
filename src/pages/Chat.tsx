@@ -736,18 +736,24 @@ export default function Chat() {
         writeMemory(latestUserContent, jwt);
       }
 
+      // AI SDK v6 UI Message Stream protocol — SSE with typed JSON events.
+      // The legacy v3 data-stream format (0:..., d:...) is silently ignored by
+      // v6, which is why assistant bubbles came back empty.
+      const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const textId = `text-${Date.now()}`;
       const stream = new ReadableStream({
         start(controller) {
           const encoder = new TextEncoder();
-          controller.enqueue(encoder.encode(`0:${JSON.stringify(content)}\n`));
-          controller.enqueue(
-            encoder.encode(
-              `d:${JSON.stringify({
-                finishReason: "stop",
-                usage: data.usage ?? { promptTokens: 0, completionTokens: 0 },
-              })}\n`
-            )
-          );
+          const send = (obj: unknown) =>
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
+          send({ type: "start", messageId });
+          send({ type: "start-step" });
+          send({ type: "text-start", id: textId });
+          if (content) send({ type: "text-delta", id: textId, delta: content });
+          send({ type: "text-end", id: textId });
+          send({ type: "finish-step" });
+          send({ type: "finish" });
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
           controller.close();
         },
       });
@@ -755,8 +761,9 @@ export default function Chat() {
       return new Response(stream, {
         status: 200,
         headers: {
-          "Content-Type": "text/plain; charset=utf-8",
-          "X-Vercel-AI-Data-Stream": "v1",
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          "x-vercel-ai-ui-message-stream": "v1",
         },
       });
       },
