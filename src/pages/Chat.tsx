@@ -777,7 +777,13 @@ export default function Chat() {
           // the previous implementation raced with refreshSession and left
           // the page in a "spam Session expired even after re-login" loop.
           if (response.status === 401 && lc.includes("jwt")) {
-            errMsg = "Your session expired. Please sign in again.";
+            // If the proxy gave us a specific reason (e.g. "JWT expired",
+            // "signature invalid"), append it so we can debug without
+            // opening DevTools. Empty reason = legacy proxy or unknown.
+            const reason = errData?.reason;
+            errMsg = reason
+              ? `Session expired (${reason}). Please sign in again.`
+              : "Your session expired. Please sign in again.";
           }
         } catch {}
         throw new Error(errMsg);
