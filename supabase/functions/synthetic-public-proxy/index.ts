@@ -475,7 +475,18 @@ serve(async (req) => {
     messages: body.messages,
     temperature: body.temperature ?? 0.7,
     max_tokens: body.max_tokens ?? 4096,
+    stream: true,
   };
+
+  // Build CORS headers once — needed on both stream response and error responses.
+  function corsHeaders(r: Request): Record<string, string> {
+    const origin = r.headers.get("origin") ?? "*";
+    return {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Headers": "authorization, content-type, x-anon-session",
+      "Access-Control-Expose-Headers": "X-Anon-Session",
+    };
+  }
 
   try {
     const upstreamStart = Date.now();
@@ -489,8 +500,10 @@ serve(async (req) => {
     });
     const upstreamLatencyMs = Date.now() - upstreamStart;
 
-    const data = await upstream.json();
+    // Non-2xx: read error body and return structured error before streaming.
     if (!upstream.ok) {
+      let detail: unknown = null;
+      try { detail = await upstream.json(); } catch { detail = await upstream.text(); }
       logRequest({
         route: "synthetic-public-proxy",
         status: "upstream_error",
@@ -503,19 +516,10 @@ serve(async (req) => {
         ip_hash: !userId ? (await sha256(ip)).slice(0, 8) : undefined,
       });
       return errorResponse(
-        { error: "upstream error", status: upstream.status, detail: data },
+        { error: "upstream error", status: upstream.status, detail },
         502,
       );
     }
-
-    // Normalize reasoning model responses so callers always get message.content
-    if (data?.choices && Array.isArray(data.choices)) {
-      data.choices = data.choices.map(normalizeReasoningChoice);
-    }
-
-    const responseInit: ResponseInit | undefined = newAnonSessionToken
-      ? { headers: { "X-Anon-Session": newAnonSessionToken } }
-      : undefined;
 
     logRequest({
       route: "synthetic-public-proxy",
@@ -528,15 +532,22 @@ serve(async (req) => {
       ip_hash: !userId ? (await sha256(ip)).slice(0, 8) : undefined,
     });
 
-    return jsonResponse(
-      {
-        ok: true,
-        model: data.model ?? payload.model,
-        choices: data.choices,
-        usage: data.usage,
-      },
-      responseInit,
-    );
+    // Pass the upstream SSE stream straight through to the client.
+    // The client (Chat.tsx) parses the OpenAI-compatible SSE lines.
+    const streamHeaders: Record<string, string> = {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      "X-Accel-Buffering": "no",
+      ...corsHeaders(req),
+    };
+    if (newAnonSessionToken) {
+      streamHeaders["X-Anon-Session"] = newAnonSessionToken;
+    }
+
+    return new Response(upstream.body, {
+      status: 200,
+      headers: streamHeaders,
+    });
   } catch (err) {
     logRequest({
       route: "synthetic-public-proxy",

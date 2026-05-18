@@ -148,6 +148,7 @@ const THREAD_STORAGE_KEY = "tag_threads_v1";
 const ACTIVE_THREAD_KEY = "tag_active_thread_v1";
 const ANON_SESSION_KEY = "tag_anon_session_v1";
 const TAG_ACTIVE_WORKSPACE_KEY = "tag_active_workspace_v1";
+const TEMPERATURE_KEY = "tag_temperature_v1";
 
 // ---------------------------------------------------------------------------
 // Thread management types + helpers
@@ -462,6 +463,7 @@ export default function Chat() {
   const [view, setView] = useState<"chat" | "compare" | "agent">("chat");
   const [pendingFileNote, setPendingFileNote] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  const [slashOpen, setSlashOpen] = useState(false);
   const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
   const [accountDrawerOpen, setAccountDrawerOpen] = useState(false);
   const [showError, setShowError] = useState(false);
@@ -512,6 +514,32 @@ export default function Chat() {
   useEffect(() => { pendingFileNoteRef.current = pendingFileNote; }, [pendingFileNote]);
   useEffect(() => { activeWorkspaceIdRef.current = activeWorkspaceId; }, [activeWorkspaceId]);
 
+  // ── Temperature — persisted to localStorage, mirrored to ref for fetch closure ──
+  const [temperature, setTemperature] = useState<number>(() => {
+    try {
+      const v = parseFloat(localStorage.getItem(TEMPERATURE_KEY) ?? "");
+      return isNaN(v) ? 0.7 : Math.min(1.5, Math.max(0, v));
+    } catch { return 0.7; }
+  });
+  const [tempSliderOpen, setTempSliderOpen] = useState(false);
+  const temperatureRef = useRef(temperature);
+  useEffect(() => { temperatureRef.current = temperature; }, [temperature]);
+  useEffect(() => {
+    try { localStorage.setItem(TEMPERATURE_KEY, String(temperature)); } catch {}
+  }, [temperature]);
+
+  // ── Sidebar / thread state — declared BEFORE any effect that references them ──
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return window.innerWidth >= 1024; // lg: breakpoint
+  });
+  const [threads, setThreads] = useState<Thread[]>(() => loadThreads());
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(() => {
+    try { return localStorage.getItem(ACTIVE_THREAD_KEY); } catch { return null; }
+  });
+  const [threadSearch, setThreadSearch] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
   // Mirror active thread to ref so fetch wrapper closure can read systemPrompt
   const activeThreadRef = useRef<Thread | null>(null);
   useEffect(() => {
@@ -541,16 +569,6 @@ export default function Chat() {
     } catch {
       return false;
     }
-  });
-
-  // ── Sidebar / thread state ──────────────────────────────────────────────
-  const [sidebarOpen, setSidebarOpen] = useState(() => {
-    if (typeof window === "undefined") return true;
-    return window.innerWidth >= 1024; // lg: breakpoint
-  });
-  const [threads, setThreads] = useState<Thread[]>(() => loadThreads());
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(() => {
-    try { return localStorage.getItem(ACTIVE_THREAD_KEY); } catch { return null; }
   });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -705,6 +723,7 @@ export default function Chat() {
       const livePendingFileNote = pendingFileNoteRef.current;
       const liveWorkspaceId = activeWorkspaceIdRef.current;
       const liveActiveThread = activeThreadRef.current;
+      const liveTemperature = temperatureRef.current;
       const reqBody = init?.body ? JSON.parse(init.body as string) : {};
       // Diagnostic — exposes whether the send is even firing and with what
       // identity. If signed-in chats stop working again, the user can paste
@@ -895,8 +914,9 @@ export default function Chat() {
           body: JSON.stringify({
             model: liveModel,
             messages: finalMessages,
-            temperature: reqBody.temperature ?? 0.7,
+            temperature: liveTemperature,
             max_tokens: reqBody.max_tokens ?? 4096,
+            stream: true,
           }),
         });
       } else if (activeBYOKProvider && activeBYOKKey) {
@@ -1007,33 +1027,114 @@ export default function Chat() {
         try { localStorage.setItem(ANON_SESSION_KEY, newAnonSession); } catch {}
       }
 
-      const data = await response.json();
-      const content: string = data.choices?.[0]?.message?.content ?? "";
-
-      if (liveJwt && latestUserContent && latestUserContent.length >= 20 && latestUserContent !== lastWrittenMemoryRef.current) {
-        lastWrittenMemoryRef.current = latestUserContent;
-        writeMemory(latestUserContent, liveJwt, liveWorkspaceId);
-      }
-
       // AI SDK v6 UI Message Stream protocol — SSE with typed JSON events.
-      // The legacy v3 data-stream format (0:..., d:...) is silently ignored by
-      // v6, which is why assistant bubbles came back empty.
+      // We pipe the upstream OpenAI-compatible SSE (data: {...choices[0].delta.content...})
+      // through a transform that emits AI SDK v6 events in real time, so the
+      // user sees first words within ~500ms rather than waiting for the full response.
       const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const textId = `text-${Date.now()}`;
+
+      const upstreamBody = response.body;
+
       const stream = new ReadableStream({
-        start(controller) {
+        async start(controller) {
           const encoder = new TextEncoder();
           const send = (obj: unknown) =>
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
+
           send({ type: "start", messageId });
           send({ type: "start-step" });
           send({ type: "text-start", id: textId });
-          if (content) send({ type: "text-delta", id: textId, delta: content });
-          send({ type: "text-end", id: textId });
-          send({ type: "finish-step" });
-          send({ type: "finish" });
-          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-          controller.close();
+
+          // 10-second silence timeout — if the upstream stops sending bytes
+          // entirely, abort so the UI doesn't hang indefinitely.
+          let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+          const SILENCE_TIMEOUT_MS = 10_000;
+
+          if (!upstreamBody) {
+            // Upstream returned no body — emit empty response cleanly.
+            send({ type: "text-end", id: textId });
+            send({ type: "finish-step" });
+            send({ type: "finish" });
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+            return;
+          }
+
+          const reader = upstreamBody.getReader();
+          const decoder = new TextDecoder();
+          let sseBuffer = "";
+          let streamErrored = false;
+
+          const resetSilenceTimer = () => {
+            if (silenceTimer !== null) clearTimeout(silenceTimer);
+            silenceTimer = setTimeout(() => {
+              streamErrored = true;
+              reader.cancel("upstream silence timeout").catch(() => {});
+              send({ type: "text-end", id: textId });
+              send({ type: "finish-step" });
+              send({ type: "finish" });
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+              controller.close();
+            }, SILENCE_TIMEOUT_MS);
+          };
+
+          resetSilenceTimer();
+
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done || streamErrored) break;
+
+              resetSilenceTimer();
+              sseBuffer += decoder.decode(value, { stream: true });
+
+              // Split on SSE event boundaries (\n\n). Keep the last incomplete chunk.
+              const events = sseBuffer.split("\n\n");
+              sseBuffer = events.pop() ?? "";
+
+              for (const event of events) {
+                for (const line of event.split("\n")) {
+                  const trimmed = line.trim();
+                  if (!trimmed.startsWith("data:")) continue;
+                  const raw = trimmed.slice(5).trim();
+                  if (raw === "[DONE]") break;
+                  try {
+                    const parsed = JSON.parse(raw);
+                    // OpenAI-compatible streaming: choices[0].delta.content
+                    // Fallback: choices[0].message.content (some providers)
+                    const delta: string =
+                      parsed?.choices?.[0]?.delta?.content ??
+                      parsed?.choices?.[0]?.message?.content ??
+                      "";
+                    if (delta) {
+                      send({ type: "text-delta", id: textId, delta });
+                    }
+                  } catch {
+                    // Malformed JSON chunk — skip silently.
+                  }
+                }
+              }
+            }
+          } catch {
+            // reader.cancel() from silence timeout triggers a read error — handled above.
+          } finally {
+            if (silenceTimer !== null) clearTimeout(silenceTimer);
+          }
+
+          if (!streamErrored) {
+            send({ type: "text-end", id: textId });
+            send({ type: "finish-step" });
+            send({ type: "finish" });
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+          }
+
+          // Write memory after stream fully completes (best-effort, non-blocking).
+          if (liveJwt && latestUserContent && latestUserContent.length >= 20 && latestUserContent !== lastWrittenMemoryRef.current) {
+            lastWrittenMemoryRef.current = latestUserContent;
+            writeMemory(latestUserContent, liveJwt, liveWorkspaceId);
+          }
         },
       });
 
