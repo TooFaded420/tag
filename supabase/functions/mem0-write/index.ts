@@ -120,6 +120,29 @@ serve(async (req) => {
     return errorResponse({ error: "failed to write memory" }, 502, req);
   }
 
+  // P1c fix: when workspace_id is provided, validate that the authenticated user is
+  // actually a member of that workspace BEFORE using the service-role client to insert.
+  // The service-role client bypasses RLS, so without this check any user who knows a
+  // workspace UUID could write workspace-scoped memories for it.
+  if (workspace_id) {
+    const authHeader = req.headers.get("authorization") ?? "";
+    const token = authHeader.slice("bearer ".length).trim();
+    const jwtClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      global: { headers: { Authorization: `Bearer ${token}` } },
+    });
+    const { data: memberRow, error: memberErr } = await (jwtClient
+      .from("workspace_members") as any)
+      .select("user_id")
+      .eq("workspace_id", workspace_id)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (memberErr || !memberRow) {
+      logRequest({ route: "mem0-write", status: "forbidden", start: reqStart, user_id: userId });
+      return errorResponse({ error: "forbidden — not a member of this workspace" }, 403, req);
+    }
+  }
+
   // Insert into chat_memories via service role client
   // TODO: remove `as any` cast when Supabase types are regenerated to include chat_memories
   const serviceClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);

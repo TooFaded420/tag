@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 
 interface Member {
   user_id: string;
-  role: "owner" | "member";
+  role: "workspace_admin" | "member";
   joined_at: string;
 }
 
@@ -138,12 +138,12 @@ export function InviteDialog({ workspaceId, open, onClose }: Props) {
                     <span
                       className={cn(
                         "rounded-full px-2 py-0.5 text-[10px] font-medium shrink-0",
-                        m.role === "owner"
+                        m.role === "workspace_admin"
                           ? "bg-primary/15 text-primary"
                           : "border border-border text-muted-foreground"
                       )}
                     >
-                      {m.role === "owner" ? "Owner" : "Member"}
+                      {m.role === "workspace_admin" ? "Admin" : "Member"}
                     </span>
                   </li>
                 ))}
