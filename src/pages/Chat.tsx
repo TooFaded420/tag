@@ -882,6 +882,12 @@ export default function Chat() {
     if (prev !== jwt && jwt) {
       setShowError(false);
       hasSentThisSessionRef.current = false;
+      // CRITICAL: do NOT drop messages while a send is in flight. Without this
+      // guard, a jwt state update (initial mount, silent refresh, dup auth
+      // events) that fires between chat.sendMessage and the first stream
+      // delta would delete the user message — leaving the in-progress
+      // assistant stream pointing at nothing, and the user sees "no reply".
+      if (chat.status === "streaming" || chat.status === "submitted") return;
       chat.setMessages((msgs) => {
         if (msgs.length === 0) return msgs;
         const last = msgs[msgs.length - 1];

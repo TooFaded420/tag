@@ -115,11 +115,27 @@ serve(async (req) => {
     return errorResponse({ error: "embedding failed", detail: err instanceof Error ? err.message : "unknown" }, 502);
   }
 
-  // Call match_chat_memories RPC via service role client
-  // TODO: remove `as any` cast when Supabase types are regenerated to include match_chat_memories RPC
-  const serviceClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  // Call match_chat_memories RPC via USER-JWT client (not service role).
+  //
+  // The function has a SECURITY DEFINER auth guard added in migration
+  // 20260517160000_match_chat_memories_auth_guard.sql that checks
+  // `auth.uid() IS DISTINCT FROM p_user_id`. Service-role calls have
+  // auth.uid() = NULL, which makes that check fail and the function
+  // RAISE EXCEPTION. With the user JWT, auth.uid() = userId and the
+  // guard passes cleanly.
+  //
+  // SUPABASE_SERVICE_ROLE_KEY is still imported above so this file is
+  // ready for any future code path that legitimately needs it. Memory
+  // search is not one.
+  void SUPABASE_SERVICE_ROLE_KEY;
+  const authHeader = req.headers.get("authorization") ?? "";
+  const userToken = authHeader.slice("bearer ".length).trim();
+  const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    global: { headers: { Authorization: `Bearer ${userToken}` } },
+  });
 
-  const { data, error } = await (serviceClient.rpc as any)(
+  // TODO: remove `as any` cast when Supabase types are regenerated to include match_chat_memories RPC
+  const { data, error } = await (userClient.rpc as any)(
     "match_chat_memories",
     {
       p_user_id: userId,
