@@ -1170,6 +1170,8 @@ export default function Chat() {
                 <a href="/blog" className="hover:text-foreground transition-colors">Blog</a>
                 <span className="text-muted-foreground/30">·</span>
                 <a href="/learn" className="hover:text-foreground transition-colors">Learn</a>
+                <span className="text-muted-foreground/30">·</span>
+                <a href="/chat/self-host" className="hover:text-foreground transition-colors">Self-host</a>
               </div>
 
               <p className="text-[10px] text-muted-foreground/40 leading-relaxed">
