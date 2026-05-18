@@ -152,9 +152,11 @@ export function TTSButton({ text, byokKey }: TTSButtonProps) {
   const [playing, setPlaying] = useState(false);
   // P2a: prevent duplicate in-flight fetches while a request is loading
   const [loading, setLoading] = useState(false);
+  const [truncated, setTruncated] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   // P2b: track the current object URL so we can revoke it before creating a new one
   const audioUrlRef = useRef<string | null>(null);
+  const truncatedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
   useEffect(() => () => {
@@ -165,6 +167,7 @@ export function TTSButton({ text, byokKey }: TTSButtonProps) {
       URL.revokeObjectURL(audioUrlRef.current);
       audioUrlRef.current = null;
     }
+    if (truncatedTimerRef.current) clearTimeout(truncatedTimerRef.current);
   }, []);
 
   if (!byokKey || !text) return null;
@@ -179,6 +182,11 @@ export function TTSButton({ text, byokKey }: TTSButtonProps) {
     // P2a: bail out if a fetch is already in flight
     if (loading) return;
     setLoading(true);
+    if (text.length > 4000) {
+      setTruncated(true);
+      if (truncatedTimerRef.current) clearTimeout(truncatedTimerRef.current);
+      truncatedTimerRef.current = setTimeout(() => setTruncated(false), 5000);
+    }
     try {
       const res = await fetch("https://api.openai.com/v1/audio/speech", {
         method: "POST",
@@ -209,16 +217,23 @@ export function TTSButton({ text, byokKey }: TTSButtonProps) {
   }
 
   return (
-    <button
-      type="button"
-      onClick={play}
-      // P2a: disable while a fetch is in flight
-      disabled={loading}
-      title={playing ? "Stop playback" : loading ? "Loading…" : "Play with TTS"}
-      className="inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground/60 hover:text-foreground hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-      aria-label={playing ? "Stop playback" : "Play with TTS"}
-    >
-      <Volume2 className={cn("h-3.5 w-3.5", playing && "text-primary")} />
-    </button>
+    <span className="inline-flex items-center gap-1">
+      <button
+        type="button"
+        onClick={play}
+        // P2a: disable while a fetch is in flight
+        disabled={loading}
+        title={playing ? "Stop playback" : loading ? "Loading…" : "Play with TTS"}
+        className="inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground/60 hover:text-foreground hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        aria-label={playing ? "Stop playback" : "Play with TTS"}
+      >
+        <Volume2 className={cn("h-3.5 w-3.5", playing && "text-primary")} />
+      </button>
+      {truncated && (
+        <span className="text-[10px] text-muted-foreground">
+          Truncated to first 4000 chars for TTS.
+        </span>
+      )}
+    </span>
   );
 }
