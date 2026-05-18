@@ -63,7 +63,25 @@ export const MODELS: ModelOption[] = [
     description: "Nvidia 120B for coding agents. 262k context.",
     pricing: "$0.30/M in, $1.00/M out",
   },
-  // Image models pulled until we wire a real provider. See ROADMAP.md #image-gen-provider.
+  // Image models — fal.ai FLUX (wired in synthetic-image-proxy v2)
+  {
+    id: "fal:flux/schnell",
+    label: "FLUX Schnell",
+    provider: "synthetic",
+    tier: "anon",
+    description: "Fast FLUX image generation. Free tier.",
+    pricing: "Free",
+    modality: "image",
+  },
+  {
+    id: "fal:flux/pro",
+    label: "FLUX Pro",
+    provider: "synthetic",
+    tier: "pro",
+    description: "High-quality FLUX Pro image generation.",
+    pricing: "Pro",
+    modality: "image",
+  },
 ];
 
 type Tier = "anon" | "free" | "pro";
