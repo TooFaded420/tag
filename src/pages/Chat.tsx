@@ -565,6 +565,15 @@ export default function Chat() {
       const liveByokKeys = byokKeysRef.current;
       const livePendingFileNote = pendingFileNoteRef.current;
       const reqBody = init?.body ? JSON.parse(init.body as string) : {};
+      // Diagnostic — exposes whether the send is even firing and with what
+      // identity. If signed-in chats stop working again, the user can paste
+      // this from the browser console to give us instant insight.
+      console.debug("[Tag chat] send:", {
+        signedIn: !!liveJwt,
+        model: liveModel,
+        msgCount: (reqBody.messages ?? []).length,
+        hasFileNote: !!livePendingFileNote,
+      });
 
       // AI SDK v6 sends UIMessages: { role, parts: [{ type:"text", text:"..." }] }.
       // synthetic.new (OpenAI-compatible) requires { role, content: string }.
@@ -866,37 +875,14 @@ export default function Chat() {
     }
   }, [chat.status]);
 
-  // After a successful re-login, drop the stale "Session expired" banner AND
-  // any orphan user message left over from the rejected send. Without this,
-  // chat.error sticks around in useChat state and the banner re-renders on
-  // every interaction — "spamming Session expired even after re-login".
-  // Trigger: jwt transitions from null → truthy.
-  const prevJwtRef = useRef<string | null>(jwt);
-  useEffect(() => {
-    const prev = prevJwtRef.current;
-    prevJwtRef.current = jwt;
-    // Any change TO a truthy jwt — covers null→new (first login),
-    // stale→new (post-expired re-login, since we no longer auto-signOut),
-    // and silent refresh. Idempotent: setMessages is a no-op when there's
-    // no orphan; clearing showError is safe.
-    if (prev !== jwt && jwt) {
-      setShowError(false);
-      hasSentThisSessionRef.current = false;
-      // CRITICAL: do NOT drop messages while a send is in flight. Without this
-      // guard, a jwt state update (initial mount, silent refresh, dup auth
-      // events) that fires between chat.sendMessage and the first stream
-      // delta would delete the user message — leaving the in-progress
-      // assistant stream pointing at nothing, and the user sees "no reply".
-      if (chat.status === "streaming" || chat.status === "submitted") return;
-      chat.setMessages((msgs) => {
-        if (msgs.length === 0) return msgs;
-        const last = msgs[msgs.length - 1];
-        if (last?.role === "user") return msgs.slice(0, -1);
-        return msgs;
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jwt]);
+  // Note: previous versions had a jwt-change useEffect here that dropped
+  // trailing user messages and cleared showError on any jwt transition.
+  // It caused signed-in chat to silently fail in ways that were hard to
+  // reproduce. Removed in favor of:
+  //   1. SIGNED_IN auth event handler clears showError (line ~462)
+  //   2. The fetch wrapper's 401 path no longer auto-signOuts
+  //   3. User can manually dismiss the banner via the X button
+  // The orphan failed message is a minor UX wart, not worth the bug surface.
 
   // ── Auto-scroll ─────────────────────────────────────────────────────────
   useEffect(() => {
