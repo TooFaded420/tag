@@ -194,6 +194,12 @@ interface Mem0Memory {
 }
 
 async function searchMemories(query: string, jwt: string): Promise<Mem0Memory[]> {
+  // 3s timeout — memory search is a nice-to-have, must NEVER block the chat
+  // send. Before the timeout, a hanging mem0-search hung the entire fetch
+  // wrapper and produced "no reply" for the signed-in user. Worst case now:
+  // memory injection skipped, chat still streams.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 3000);
   try {
     const res = await fetch(`${SUPABASE_URL}/functions/v1/mem0-search`, {
       method: "POST",
@@ -202,12 +208,15 @@ async function searchMemories(query: string, jwt: string): Promise<Mem0Memory[]>
         Authorization: `Bearer ${jwt}`,
       },
       body: JSON.stringify({ query, limit: 5 }),
+      signal: ctrl.signal,
     });
     if (!res.ok) return [];
     const data = await res.json();
     return (data?.memories as Mem0Memory[]) ?? [];
   } catch {
     return [];
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -592,7 +601,14 @@ export default function Chat() {
       }
 
       if (liveJwt && latestUserContent) {
-        const memories = await searchMemories(latestUserContent, liveJwt);
+        // Hard 3.5s ceiling on memory injection — even if the in-function
+        // abort doesn't kick in (e.g. network stack swallows signal), this
+        // Promise.race guarantees we move on. Memory is best-effort decoration,
+        // never a gate.
+        const memories: Mem0Memory[] = await Promise.race([
+          searchMemories(latestUserContent, liveJwt),
+          new Promise<Mem0Memory[]>((resolve) => setTimeout(() => resolve([]), 3500)),
+        ]);
         if (memories.length > 0) {
           const alreadyInjected = messages.some(
             (m) => m.role === "system" && m.content.startsWith("You have access to the user's previous context.")
