@@ -442,7 +442,10 @@ export default function Chat() {
   });
 
   // ── Sidebar / thread state ──────────────────────────────────────────────
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return window.innerWidth >= 1024; // lg: breakpoint
+  });
   const [threads, setThreads] = useState<Thread[]>(() => loadThreads());
   const [activeThreadId, setActiveThreadId] = useState<string | null>(() => {
     try { return localStorage.getItem(ACTIVE_THREAD_KEY); } catch { return null; }
