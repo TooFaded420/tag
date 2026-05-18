@@ -117,28 +117,41 @@ async function fetchModelResponse(
   jwt: string | null,
   byokKeys: Record<string, string> | undefined
 ): Promise<string> {
+  // BYOK keys NEVER touch our server. If user has a synthetic key for an hf:
+  // model, fetch direct to api.synthetic.new. Anything else routes through
+  // the proxy WITHOUT the key — proxy uses its own SYNTHETIC_API_KEY (counted
+  // against tier quota). This matches the Chat.tsx fetch wrapper pattern and
+  // the product principle in the launch blog post.
   const syntheticKey = byokKeys?.["synthetic"];
-  const byokProvider = modelId.startsWith("hf:") && syntheticKey ? "synthetic" : undefined;
-  const byokKey = byokProvider ? syntheticKey : undefined;
+  const useDirectBYOK = !!(modelId.startsWith("hf:") && syntheticKey);
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  if (jwt) {
-    headers["Authorization"] = `Bearer ${jwt}`;
+  let res: Response;
+  if (useDirectBYOK) {
+    res = await fetch("https://api.synthetic.new/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${syntheticKey}`,
+      },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.7,
+        max_tokens: 4096,
+      }),
+    });
+  } else {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (jwt) headers["Authorization"] = `Bearer ${jwt}`;
+    res = await fetch(PROXY_URL, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: modelId,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
   }
-
-  const body: Record<string, unknown> = {
-    model: modelId,
-    messages: [{ role: "user", content: prompt }],
-    ...(byokProvider ? { byok_provider: byokProvider, byok_key: byokKey } : {}),
-  };
-
-  const res = await fetch(PROXY_URL, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
 
   if (!res.ok) {
     let errMsg = "Request failed";
