@@ -63,29 +63,7 @@ export const MODELS: ModelOption[] = [
     description: "Nvidia 120B for coding agents. 262k context.",
     pricing: "$0.30/M in, $1.00/M out",
   },
-  // ── Image generation models ──────────────────────────────────────────────
-  {
-    // TODO: verify "hf:black-forest-labs/FLUX.1-schnell" is accepted by
-    // synthetic.new /v1/images/generations — best-guess HF namespace.
-    id: "hf:black-forest-labs/FLUX.1-schnell",
-    label: "FLUX Schnell",
-    provider: "synthetic",
-    tier: "anon",
-    description: "Fast FLUX image generation. 5 images/day free.",
-    pricing: "$",
-    modality: "image",
-  },
-  {
-    // TODO: confirm "hf:nanobanana/pro" model ID with synthetic.new.
-    // Using best-guess HF namespace. Returns 402 upstream if wrong.
-    id: "hf:nanobanana/pro",
-    label: "Nano Banana Pro",
-    provider: "synthetic",
-    tier: "pro",
-    description: "High-quality Pro image generation.",
-    pricing: "$$$",
-    modality: "image",
-  },
+  // Image models pulled until we wire a real provider. See ROADMAP.md #image-gen-provider.
 ];
 
 type Tier = "anon" | "free" | "pro";
