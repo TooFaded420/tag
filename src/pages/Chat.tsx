@@ -29,6 +29,7 @@ import { SkinPicker, useChatSkin } from "@/components/chat/SkinPicker";
 import type { Message } from "@ai-sdk/react";
 
 const MessageContent = lazy(() => import("@/components/chat/MessageContent"));
+import { ImageBubble } from "@/components/chat/ImageBubble";
 
 // ---------------------------------------------------------------------------
 // Pro welcome modal
@@ -133,6 +134,7 @@ function ProWelcomeModal({ onDismiss }: { onDismiss: () => void }) {
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
 const PROXY_URL = `${SUPABASE_URL}/functions/v1/synthetic-public-proxy`;
+const IMAGE_PROXY_URL = `${SUPABASE_URL}/functions/v1/synthetic-image-proxy`;
 const DEFAULT_MODEL = MODELS[0].id;
 const THREAD_STORAGE_KEY = "tag_threads_v1";
 const ACTIVE_THREAD_KEY = "tag_active_thread_v1";
@@ -411,6 +413,13 @@ export default function Chat() {
   // against stale chat.error rehydrated from restored threads on page mount.
   const hasSentThisSessionRef = useRef(false);
 
+  // Image generation results keyed by message-id.
+  // The fetch wrapper injects a __IMAGE_RESULT__ sentinel into the SSE stream;
+  // the render loop detects it and swaps in <ImageBubble> instead of markdown.
+  const [imageResults, setImageResults] = useState<
+    Record<string, { imageUrl: string; prompt: string; model: string }>
+  >({});
+
   // Mirror state to refs so the chat transport (constructed ONCE on mount)
   // can read live values at request time instead of capturing stale snapshots.
   // Without this, jwt/turnstileToken/anonSession/model captured on first render
@@ -659,6 +668,74 @@ export default function Chat() {
             }
           }
         }
+      }
+
+      // ── Image generation path ─────────────────────────────────────────────
+      // If the selected model has modality="image", skip the chat proxy and
+      // hit the image proxy instead. Memory injection is skipped for images
+      // (image prompts aren't useful as persistent memory).
+      const selectedModelMeta = MODELS.find((m) => m.id === liveModel);
+      if (selectedModelMeta?.modality === "image") {
+        const imagePrompt = latestUserContent;
+        const imgRes = await fetch(IMAGE_PROXY_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(liveJwt ? { Authorization: `Bearer ${liveJwt}` } : {}),
+          },
+          body: JSON.stringify({ model: liveModel, prompt: imagePrompt }),
+        });
+
+        if (!imgRes.ok) {
+          let errMsg = "Image generation failed";
+          try {
+            const errData = await imgRes.json();
+            errMsg = errData?.error ?? errMsg;
+          } catch {}
+          throw new Error(errMsg);
+        }
+
+        const imgData = await imgRes.json();
+        const imageUrl: string = imgData.image_url ?? "";
+
+        // Store result so the render loop can display it.
+        // We generate a deterministic message-id that matches what the AI SDK
+        // assigns via the SSE stream we're about to return.
+        const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        setImageResults((prev) => ({
+          ...prev,
+          [messageId]: { imageUrl, prompt: imagePrompt, model: liveModel },
+        }));
+
+        // Return a synthetic SSE stream. The text content is a sentinel that
+        // the render loop detects to look up the imageResults entry.
+        const sentinel = `__IMAGE_RESULT__:${messageId}`;
+        const textId = `text-${Date.now()}`;
+        const stream = new ReadableStream({
+          start(controller) {
+            const encoder = new TextEncoder();
+            const send = (obj: unknown) =>
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
+            send({ type: "start", messageId });
+            send({ type: "start-step" });
+            send({ type: "text-start", id: textId });
+            send({ type: "text-delta", id: textId, delta: sentinel });
+            send({ type: "text-end", id: textId });
+            send({ type: "finish-step" });
+            send({ type: "finish" });
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+          },
+        });
+
+        return new Response(stream, {
+          status: 200,
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache, no-transform",
+            "x-vercel-ai-ui-message-stream": "v1",
+          },
+        });
       }
 
       const DIRECT_BYOK_PROVIDERS: Record<string, string> = {
@@ -1465,6 +1542,14 @@ export default function Chat() {
                               );
                             }
 
+                            // Detect image generation sentinel injected by the fetch wrapper
+                            const imageResultId = content.startsWith("__IMAGE_RESULT__:")
+                              ? content.slice("__IMAGE_RESULT__:".length).trim()
+                              : null;
+                            const imageResult = imageResultId
+                              ? (imageResults[imageResultId] ?? null)
+                              : null;
+
                             return (
                               <div key={msg.id} className="flex items-start gap-2.5">
                                 <div className="h-7 w-7 shrink-0 rounded-full bg-muted border border-border/60 flex items-center justify-center overflow-hidden mt-0.5">
@@ -1478,9 +1563,17 @@ export default function Chat() {
                                   </picture>
                                 </div>
                                 <div className="flex-1 min-w-0 text-sm text-foreground leading-relaxed">
-                                  <Suspense fallback={<span className="text-muted-foreground text-xs">…</span>}>
-                                    <MessageContent content={content} />
-                                  </Suspense>
+                                  {imageResult ? (
+                                    <ImageBubble
+                                      imageUrl={imageResult.imageUrl}
+                                      prompt={imageResult.prompt}
+                                      model={imageResult.model}
+                                    />
+                                  ) : (
+                                    <Suspense fallback={<span className="text-muted-foreground text-xs">…</span>}>
+                                      <MessageContent content={content} />
+                                    </Suspense>
+                                  )}
                                 </div>
                               </div>
                             );
@@ -1640,7 +1733,7 @@ export default function Chat() {
                     <textarea
                       ref={textareaRef}
                       className="flex-1 resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none disabled:opacity-50 leading-relaxed max-h-40"
-                      placeholder="Message Tag…"
+                      placeholder={MODELS.find((m) => m.id === model)?.modality === "image" ? "Describe an image…" : "Message Tag…"}
                       rows={1}
                       value={input}
                       onChange={(e) => {

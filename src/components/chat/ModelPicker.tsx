@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Check, ChevronDown, Lock } from "lucide-react";
+import { Check, ChevronDown, ImageIcon, Lock } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 
@@ -10,6 +10,8 @@ export interface ModelOption {
   tier: "anon" | "free" | "pro" | "byok";
   description: string;
   pricing?: string;
+  /** "text" (default) or "image" — determines send path and composer placeholder */
+  modality?: "text" | "image";
 }
 
 export const MODELS: ModelOption[] = [
@@ -60,6 +62,29 @@ export const MODELS: ModelOption[] = [
     tier: "pro",
     description: "Nvidia 120B for coding agents. 262k context.",
     pricing: "$0.30/M in, $1.00/M out",
+  },
+  // ── Image generation models ──────────────────────────────────────────────
+  {
+    // TODO: verify "hf:black-forest-labs/FLUX.1-schnell" is accepted by
+    // synthetic.new /v1/images/generations — best-guess HF namespace.
+    id: "hf:black-forest-labs/FLUX.1-schnell",
+    label: "FLUX Schnell",
+    provider: "synthetic",
+    tier: "anon",
+    description: "Fast FLUX image generation. 5 images/day free.",
+    pricing: "$",
+    modality: "image",
+  },
+  {
+    // TODO: confirm "hf:nanobanana/pro" model ID with synthetic.new.
+    // Using best-guess HF namespace. Returns 402 upstream if wrong.
+    id: "hf:nanobanana/pro",
+    label: "Nano Banana Pro",
+    provider: "synthetic",
+    tier: "pro",
+    description: "High-quality Pro image generation.",
+    pricing: "$$$",
+    modality: "image",
   },
 ];
 
@@ -167,6 +192,9 @@ export function ModelPicker({ value, onChange, onUpgrade, tier: tierProp }: Prop
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
+                          {model.modality === "image" && (
+                            <ImageIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          )}
                           <span className="font-medium text-sm">{model.label}</span>
                           {model.tier === "pro" && (
                             <span className="text-[10px] uppercase tracking-wider text-primary font-semibold">
