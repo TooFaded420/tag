@@ -21,7 +21,10 @@ const SYNTHETIC_API_KEY = Deno.env.get("SYNTHETIC_API_KEY");
 const SYNTHETIC_BASE_URL =
   Deno.env.get("SYNTHETIC_BASE_URL") ?? "https://api.synthetic.new/v1";
 
-const EMBEDDING_MODEL = "hf:openai/text-embedding-3-small"; // 1536-dim
+// synthetic.new dropped openai embeddings — swap to nomic-embed-text-v1.5
+// (768-dim, open-source). chat_memories.embedding column matches via migration
+// 20260518010000_chat_memories_nomic_768.sql.
+const EMBEDDING_MODEL = "hf:nomic-ai/nomic-embed-text-v1.5"; // 768-dim
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
