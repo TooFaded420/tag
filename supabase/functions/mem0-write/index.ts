@@ -95,14 +95,14 @@ serve(async (req) => {
     return errorResponse({ error: "unauthorized — valid Supabase JWT required" }, 401);
   }
 
-  let body: { content: string; importance?: number; metadata?: Record<string, unknown> };
+  let body: { content: string; importance?: number; metadata?: Record<string, unknown>; workspace_id?: string };
   try {
     body = await readJson<typeof body>(req);
   } catch (err) {
     return errorResponse({ error: err instanceof Error ? err.message : "invalid body" }, 400);
   }
 
-  const { content, importance = 0.5, metadata = {} } = body;
+  const { content, importance = 0.5, metadata = {}, workspace_id } = body;
   const imp = Math.min(1, Math.max(0, Number(importance) || 0.5));
 
   if (!content || typeof content !== "string" || content.trim().length === 0) {
@@ -123,15 +123,23 @@ serve(async (req) => {
   // TODO: remove `as any` cast when Supabase types are regenerated to include chat_memories
   const serviceClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+  // Build insert row; include workspace_id when provided for workspace-scoped memories.
+  // Omitting workspace_id (undefined) keeps the column NULL = personal mode (existing behavior).
+  // TODO: remove `as any` cast when Supabase types are regenerated to include workspace_id
+  const insertRow: Record<string, unknown> = {
+    user_id: userId,
+    content: content.trim(),
+    embedding,
+    importance: imp,
+    metadata,
+  };
+  if (workspace_id) {
+    insertRow.workspace_id = workspace_id;
+  }
+
   const { data, error } = await (serviceClient
     .from("chat_memories") as any)
-    .insert({
-      user_id: userId,
-      content: content.trim(),
-      embedding,
-      importance: imp,
-      metadata,
-    })
+    .insert(insertRow)
     .select("id, created_at")
     .single();
 

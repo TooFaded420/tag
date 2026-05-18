@@ -95,14 +95,14 @@ serve(async (req) => {
     return errorResponse({ error: "unauthorized — valid Supabase JWT required" }, 401);
   }
 
-  let body: { query: string; limit?: number; min_similarity?: number };
+  let body: { query: string; limit?: number; min_similarity?: number; workspace_id?: string };
   try {
     body = await readJson<typeof body>(req);
   } catch (err) {
     return errorResponse({ error: err instanceof Error ? err.message : "invalid body" }, 400);
   }
 
-  const { query, limit = 5, min_similarity = 0.7 } = body;
+  const { query, limit = 5, min_similarity = 0.7, workspace_id } = body;
 
   if (!query || typeof query !== "string" || query.trim().length === 0) {
     return errorResponse({ error: "query is required and must be a non-empty string" }, 400);
@@ -138,15 +138,17 @@ serve(async (req) => {
   });
 
   // TODO: remove `as any` cast when Supabase types are regenerated to include match_chat_memories RPC
-  const { data, error } = await (userClient.rpc as any)(
-    "match_chat_memories",
-    {
-      p_user_id: userId,
-      p_query_embedding: queryEmbedding,
-      p_match_count: limit,
-      p_min_similarity: min_similarity,
-    },
-  );
+  const rpcArgs: Record<string, unknown> = {
+    p_user_id: userId,
+    p_query_embedding: queryEmbedding,
+    p_match_count: limit,
+    p_min_similarity: min_similarity,
+  };
+  // Pass workspace_id when provided; omit entirely for personal-mode (NULL default in RPC)
+  if (workspace_id) {
+    rpcArgs.p_workspace_id = workspace_id;
+  }
+  const { data, error } = await (userClient.rpc as any)("match_chat_memories", rpcArgs);
 
   if (error) {
     console.error("mem0-search: RPC failed:", error.message);
