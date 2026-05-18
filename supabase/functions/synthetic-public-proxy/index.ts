@@ -361,8 +361,14 @@ serve(async (req) => {
   }
 
   // ── Parse body ────────────────────────────────────────────────────────────
+  // messages[].content may be a string (text-only) or an array of content parts
+  // (multi-modal / vision). Image messages use OpenAI-compatible format:
+  //   { type: "image_url", image_url: { url: "data:image/png;base64,..." } }
+  // These are forwarded to synthetic.new untouched — synthetic.new supports the
+  // OpenAI multi-modal message format natively.
   let body: {
-    messages: Array<{ role: string; content: string }>;
+    // deno-lint-ignore no-explicit-any
+    messages: Array<{ role: string; content: string | any[] }>;
     model: string;
     temperature?: number;
     max_tokens?: number;

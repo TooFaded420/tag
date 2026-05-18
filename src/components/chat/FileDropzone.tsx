@@ -7,6 +7,10 @@ const FILE_INGEST_URL = `${SUPABASE_URL}/functions/v1/tag-file-ingest`;
 
 const MAX_FILE_BYTES_TEXT = 5 * 1024 * 1024; // 5 MB — text files
 const MAX_FILE_BYTES_PDF = 10 * 1024 * 1024; // 10 MB — PDFs
+const MAX_FILE_BYTES_IMAGE = 5 * 1024 * 1024; // 5 MB — images
+
+// Accepted image MIME types for vision input
+const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
 // Accepted mime types (must match edge function)
 const ACCEPTED_MIMES = [
@@ -50,7 +54,13 @@ function resolvedMime(file: File): string {
   return "text/plain";
 }
 
+function isImageFile(file: File): boolean {
+  const mime = file.type.split(";")[0].trim().toLowerCase();
+  return IMAGE_MIMES.has(mime);
+}
+
 function isAcceptedFile(file: File): boolean {
+  if (isImageFile(file)) return true;
   const ext = getExtension(file.name);
   if (TEXT_EXTENSIONS.has(ext)) return true;
   const mime = file.type.split(";")[0].trim().toLowerCase();
@@ -77,16 +87,24 @@ function toBase64(file: File): Promise<string> {
 type UploadState =
   | { status: "idle" }
   | { status: "uploading"; filename: string; progress: number }
-  | { status: "success"; filename: string; chunks: number; pages?: number }
+  | { status: "success"; filename: string; chunks: number; pages?: number; isImage?: boolean }
   | { status: "error"; message: string };
+
+export interface PendingImage {
+  dataUrl: string;
+  mimeType: string;
+  name: string;
+}
 
 interface FileDropzoneProps {
   jwt: string | null;
   tier: "free" | "pro";
   onIngested: (summary: string) => void;
+  /** Called when the user drops/picks an image (PNG/JPG/WebP, max 5 MB). Pro only. */
+  onImageAttached?: (img: PendingImage) => void;
 }
 
-export function FileDropzone({ jwt, tier, onIngested }: FileDropzoneProps) {
+export function FileDropzone({ jwt, tier, onIngested, onImageAttached }: FileDropzoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploadState, setUploadState] = useState<UploadState>({ status: "idle" });
   const [dragOver, setDragOver] = useState(false);
@@ -106,7 +124,34 @@ export function FileDropzone({ jwt, tier, onIngested }: FileDropzoneProps) {
       return;
     }
 
-    // Client-side validation
+    // ── Image branch: base64-encode and pass back via callback ───────────────
+    if (isImageFile(file)) {
+      if (file.size > MAX_FILE_BYTES_IMAGE) {
+        setUploadState({
+          status: "error",
+          message: `Image too large: ${(file.size / 1024 / 1024).toFixed(1)} MB. Maximum is 5 MB.`,
+        });
+        return;
+      }
+      setUploadState({ status: "uploading", filename: file.name, progress: 50 });
+      try {
+        const reader = new FileReader();
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(file);
+        });
+        const mimeType = file.type.split(";")[0].trim() || "image/png";
+        onImageAttached?.({ dataUrl, mimeType, name: file.name });
+        setUploadState({ status: "success", filename: file.name, chunks: 0, isImage: true });
+        setTimeout(() => setUploadState({ status: "idle" }), 4000);
+      } catch {
+        setUploadState({ status: "error", message: "Failed to read image. Please try again." });
+      }
+      return;
+    }
+
+    // Client-side validation (text / PDF path unchanged)
     if (!isAcceptedFile(file)) {
       setUploadState({
         status: "error",
@@ -234,7 +279,7 @@ export function FileDropzone({ jwt, tier, onIngested }: FileDropzoneProps) {
         ref={inputRef}
         type="file"
         className="sr-only"
-        accept={[...TEXT_EXTENSIONS].map((e) => `.${e}`).join(",")}
+        accept={[...TEXT_EXTENSIONS].map((e) => `.${e}`).join(",") + ",image/png,image/jpeg,image/webp"}
         onChange={(e) => handleFiles(e.target.files)}
         disabled={isUploading}
       />
@@ -308,7 +353,9 @@ export function FileDropzone({ jwt, tier, onIngested }: FileDropzoneProps) {
             {uploadState.status === "uploading" &&
               `Uploading ${uploadState.filename}… ${uploadState.progress}%`}
             {uploadState.status === "success" &&
-              `${uploadState.filename} — ${uploadState.chunks} chunk${uploadState.chunks !== 1 ? "s" : ""}${uploadState.pages !== undefined ? ` across ${uploadState.pages} page${uploadState.pages !== 1 ? "s" : ""}` : ""} stored in memory.`}
+              (uploadState.isImage
+                ? `${uploadState.filename} attached — ask your question below.`
+                : `${uploadState.filename} — ${uploadState.chunks} chunk${uploadState.chunks !== 1 ? "s" : ""}${uploadState.pages !== undefined ? ` across ${uploadState.pages} page${uploadState.pages !== 1 ? "s" : ""}` : ""} stored in memory.`)}
             {uploadState.status === "error" && uploadState.message}
           </p>
           {(uploadState.status === "success" || uploadState.status === "error") && (

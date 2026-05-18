@@ -34,6 +34,7 @@ import { MemoryPanel } from "@/components/chat/MemoryPanel";
 import { CompareView } from "@/components/chat/CompareView";
 import { AgentView } from "@/components/chat/AgentView";
 import { FileDropzone } from "@/components/chat/FileDropzone";
+import type { PendingImage } from "@/components/chat/FileDropzone";
 import { SkinPicker, useChatSkin } from "@/components/chat/SkinPicker";
 import { MicButton, TTSButton } from "@/components/chat/VoiceControls";
 import type { Message } from "@ai-sdk/react";
@@ -482,6 +483,8 @@ export default function Chat() {
   const [memoryActive, setMemoryActive] = useState(false);
   const [view, setView] = useState<"chat" | "compare" | "agent">("chat");
   const [pendingFileNote, setPendingFileNote] = useState<string | null>(null);
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const pendingImagesRef = useRef<PendingImage[]>([]);
   const [input, setInput] = useState("");
   const [slashOpen, setSlashOpen] = useState(false);
   const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
@@ -532,6 +535,7 @@ export default function Chat() {
   const pendingFileNoteRef = useRef(pendingFileNote);
   useEffect(() => { byokKeysRef.current = byokKeys; }, [byokKeys]);
   useEffect(() => { pendingFileNoteRef.current = pendingFileNote; }, [pendingFileNote]);
+  useEffect(() => { pendingImagesRef.current = pendingImages; }, [pendingImages]);
   useEffect(() => { activeWorkspaceIdRef.current = activeWorkspaceId; }, [activeWorkspaceId]);
 
   // ── Temperature — persisted to localStorage, mirrored to ref for fetch closure ──
@@ -741,6 +745,7 @@ export default function Chat() {
       const liveModel = modelRef.current;
       const liveByokKeys = byokKeysRef.current;
       const livePendingFileNote = pendingFileNoteRef.current;
+      const livePendingImages = pendingImagesRef.current;
       const liveWorkspaceId = activeWorkspaceIdRef.current;
       const liveActiveThread = activeThreadRef.current;
       const liveTemperature = temperatureRef.current;
@@ -756,12 +761,13 @@ export default function Chat() {
       });
 
       // AI SDK v6 sends UIMessages: { role, parts: [{ type:"text", text:"..." }] }.
-      // synthetic.new (OpenAI-compatible) requires { role, content: string }.
+      // synthetic.new (OpenAI-compatible) requires { role, content: string | array }.
       // Normalize: flatten parts[*].text into content, or pass through if the
       // message is already in legacy { role, content } shape.
       // deno-lint-ignore no-explicit-any
       const rawMessages: Array<any> = reqBody.messages ?? [];
-      const messages: Array<{ role: string; content: string }> = rawMessages.map((m) => {
+      // deno-lint-ignore no-explicit-any
+      const messages: Array<{ role: string; content: any }> = rawMessages.map((m) => {
         if (typeof m?.content === "string" && m.content.length > 0) {
           return { role: m.role, content: m.content };
         }
@@ -775,9 +781,27 @@ export default function Chat() {
           return { role: m.role, content: text };
         }
         return { role: m.role, content: "" };
-      }).filter((m) => m.content.length > 0);
+      }).filter((m) => typeof m.content === "string" ? m.content.length > 0 : true);
       const latestUserMsg = [...messages].reverse().find((m) => m.role === "user");
-      const latestUserContent = latestUserMsg?.content ?? "";
+      const latestUserContent: string = typeof latestUserMsg?.content === "string"
+        ? latestUserMsg.content
+        : "";
+
+      // ── Multi-modal: attach pending images to the latest user message ────────
+      // Transform the last user message from { content: "text" } to
+      // { content: [{ type:"text", text:"..." }, { type:"image_url", image_url:{url:"data:..."} }, ...] }
+      // Only Pro users can attach images (gate enforced in UI + here as a safety net).
+      if (livePendingImages.length > 0 && latestUserMsg) {
+        const textPart = { type: "text", text: latestUserContent };
+        const imageParts = livePendingImages.map((img) => ({
+          type: "image_url",
+          image_url: { url: img.dataUrl },
+        }));
+        latestUserMsg.content = [textPart, ...imageParts];
+        // Clear pending images — they're now baked into the outgoing message.
+        setPendingImages([]);
+        pendingImagesRef.current = [];
+      }
 
       let finalMessages = messages;
 
@@ -1085,6 +1109,11 @@ export default function Chat() {
           const decoder = new TextDecoder();
           let sseBuffer = "";
           let streamErrored = false;
+          // reasoning_content accumulator — emitted as a markdown blockquote
+          // prefix once regular content starts, so the user sees thinking live.
+          let reasoningBuffer = "";
+          let reasoningEmitted = false;
+          let contentStarted = false;
 
           const resetSilenceTimer = () => {
             if (silenceTimer !== null) clearTimeout(silenceTimer);
@@ -1121,13 +1150,35 @@ export default function Chat() {
                   if (raw === "[DONE]") break;
                   try {
                     const parsed = JSON.parse(raw);
+                    const choice = parsed?.choices?.[0];
                     // OpenAI-compatible streaming: choices[0].delta.content
                     // Fallback: choices[0].message.content (some providers)
                     const delta: string =
-                      parsed?.choices?.[0]?.delta?.content ??
-                      parsed?.choices?.[0]?.message?.content ??
+                      choice?.delta?.content ??
+                      choice?.message?.content ??
                       "";
+                    // reasoning_content: chain-of-thought emitted by reasoning
+                    // models (gpt-oss-120b, Kimi-K2.6, etc.) before final answer.
+                    // Stream it live as a markdown blockquote so users see thinking happen.
+                    const reasoningDelta: string =
+                      choice?.delta?.reasoning_content ?? "";
+
+                    if (reasoningDelta) {
+                      // First reasoning chunk: prefix with blockquote marker so it
+                      // renders visually distinct from the final answer.
+                      const prefix = reasoningBuffer.length === 0 ? "> 🧠 *thinking…*\n> " : "";
+                      reasoningBuffer += reasoningDelta;
+                      // Emit reasoning chunks live as blockquote lines
+                      send({ type: "text-delta", id: textId, delta: prefix + reasoningDelta });
+                    }
                     if (delta) {
+                      // First content chunk after reasoning: inject the blockquote
+                      // separator so reasoning and answer are visually distinct.
+                      if (!contentStarted && reasoningBuffer && !reasoningEmitted) {
+                        reasoningEmitted = true;
+                        send({ type: "text-delta", id: textId, delta: "\n\n" });
+                      }
+                      contentStarted = true;
                       send({ type: "text-delta", id: textId, delta });
                     }
                   } catch {
@@ -1246,6 +1297,8 @@ export default function Chat() {
     chat.setMessages([]);
     setInput("");
     setMemoryActive(false);
+    setPendingImages([]);
+    pendingImagesRef.current = [];
   }, [chat]);
 
   // ── Global keyboard shortcuts ────────────────────────────────────────────
@@ -1319,6 +1372,8 @@ export default function Chat() {
       chat.setMessages(thread.messages);
       setInput("");
       setMemoryActive(false);
+      setPendingImages([]);
+      pendingImagesRef.current = [];
     },
     [chat]
   );
@@ -1434,6 +1489,14 @@ export default function Chat() {
     setPendingFileNote(summary);
   }
 
+  function handleImageAttached(img: PendingImage) {
+    setPendingImages((prev) => [...prev, img]);
+  }
+
+  function removePendingImage(idx: number) {
+    setPendingImages((prev) => prev.filter((_, i) => i !== idx));
+  }
+
   async function handleShare() {
     if (!jwt) return; // gate: signed-in only
     if (shareStatus === "sharing") return;
@@ -1475,10 +1538,14 @@ export default function Chat() {
   // ── Derived ──────────────────────────────────────────────────────────────
   // Anon now allowed unconditionally (IP rate limit + Cloudflare DDoS in front
   // of Supabase replaces the per-message Turnstile gate).
+  const hasContent = input.trim().length > 0 || pendingImages.length > 0;
+  // Vision with images requires Pro — block send and show inline prompt instead.
+  const visionBlockedByTier = pendingImages.length > 0 && tier !== "pro";
   const canSend =
     chat.status !== "streaming" &&
     chat.status !== "submitted" &&
-    input.trim().length > 0;
+    hasContent &&
+    !visionBlockedByTier;
 
   // ---------------------------------------------------------------------------
   // Render
@@ -2356,6 +2423,35 @@ export default function Chat() {
                     )}
                   </div>
 
+                  {/* Pending image thumbnails — shown above composer when images are queued */}
+                  {pendingImages.length > 0 && (
+                    <div className="mx-auto max-w-2xl mb-2 flex flex-wrap gap-2">
+                      {pendingImages.map((img, idx) => (
+                        <div key={idx} className="relative group">
+                          <img
+                            src={img.dataUrl}
+                            alt={img.name}
+                            className="h-16 w-16 rounded-md object-cover border border-border"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removePendingImage(idx)}
+                            aria-label={`Remove ${img.name}`}
+                            className="absolute -top-1.5 -right-1.5 h-4 w-4 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <X className="h-2.5 w-2.5" />
+                          </button>
+                        </div>
+                      ))}
+                      {visionBlockedByTier && (
+                        <div className="flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/8 px-2 py-1 text-xs text-foreground self-center">
+                          <Crown className="h-3 w-3 text-primary" />
+                          <span>Vision is a <button type="button" onClick={handleUpgrade} className="underline underline-offset-2 text-primary hover:opacity-80 transition-opacity">Pro feature</button></span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Slash command autocomplete — shown above composer when input starts with / */}
                   {slashOpen && (() => {
                     const partial = input.slice(1).toLowerCase();
@@ -2447,6 +2543,7 @@ export default function Chat() {
                         jwt={jwt}
                         tier={tier}
                         onIngested={handleFileIngested}
+                        onImageAttached={handleImageAttached}
                       />
                       <MicButton
                         onTranscript={(text) => setInput((prev) => prev ? `${prev} ${text}` : text)}
