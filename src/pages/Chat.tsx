@@ -1304,6 +1304,11 @@ export default function Chat() {
     const activeThread = threads.find((t) => t.id === activeThreadId);
     if (!activeThread || activeThread.messages.length === 0) return;
 
+    const confirmed = window.confirm(
+      "This will create a public link anyone can view.\n\nThe full conversation including every message will be visible to anyone with the link.\n\nContinue?"
+    );
+    if (!confirmed) return;
+
     setShareStatus("sharing");
     try {
       // TODO: remove `as any` once types regenerated after migration
