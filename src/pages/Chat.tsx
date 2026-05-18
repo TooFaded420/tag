@@ -26,6 +26,7 @@ import { CompareView } from "@/components/chat/CompareView";
 import { AgentView } from "@/components/chat/AgentView";
 import { FileDropzone } from "@/components/chat/FileDropzone";
 import { SkinPicker, useChatSkin } from "@/components/chat/SkinPicker";
+import { MicButton, TTSButton } from "@/components/chat/VoiceControls";
 import type { Message } from "@ai-sdk/react";
 
 const MessageContent = lazy(() => import("@/components/chat/MessageContent"));
@@ -1564,6 +1565,14 @@ export default function Chat() {
                                       <MessageContent content={content} />
                                     </Suspense>
                                   )}
+                                  {!imageResult && content && (
+                                    <div className="mt-1 flex items-center gap-1">
+                                      <TTSButton
+                                        text={content}
+                                        byokKey={byokKeys?.["openai"]}
+                                      />
+                                    </div>
+                                  )}
                                 </div>
                               </div>
                             );
@@ -1748,6 +1757,10 @@ export default function Chat() {
                         jwt={jwt}
                         tier={tier}
                         onIngested={handleFileIngested}
+                      />
+                      <MicButton
+                        onTranscript={(text) => setInput((prev) => prev ? `${prev} ${text}` : text)}
+                        byokKey={byokKeys?.["openai"]}
                       />
                       <button
                         type="submit"
