@@ -19,6 +19,7 @@ import {
 import { cn } from "@/lib/utils";
 import { ModelPicker, MODELS } from "@/components/chat/ModelPicker";
 import { BYOKDrawer, readBYOKKeys } from "@/components/chat/BYOKDrawer";
+import { AccountDrawer } from "@/components/chat/AccountDrawer";
 import { TurnstileGate } from "@/components/chat/TurnstileGate";
 import { MemoryPanel } from "@/components/chat/MemoryPanel";
 import { CompareView } from "@/components/chat/CompareView";
@@ -403,6 +404,7 @@ export default function Chat() {
   const [pendingFileNote, setPendingFileNote] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
+  const [accountDrawerOpen, setAccountDrawerOpen] = useState(false);
   const [showError, setShowError] = useState(false);
   const [upgradeError, setUpgradeError] = useState<string | null>(null);
   // Track if user has actively sent during THIS session — guards the error banner
@@ -513,6 +515,17 @@ export default function Chat() {
       handleUpgrade();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jwt]);
+
+  // Auto-open the account drawer when arriving with ?account=1 — covers the
+  // redirect from the deprecated /chat/account route + external deep links.
+  useEffect(() => {
+    if (!jwt) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("account") === "1") {
+      window.history.replaceState({}, "", window.location.pathname);
+      setAccountDrawerOpen(true);
+    }
   }, [jwt]);
 
   // ── Pro welcome: auto-dismiss after 6 s, clean URL, persist flag ────────
@@ -1116,20 +1129,21 @@ export default function Chat() {
               )}
             </nav>
 
-            {/* Sidebar footer — Login / Account + tagline */}
+            {/* Sidebar footer — Login / Account + hecz.dev mini-nav + tagline */}
             <div className="px-3 pb-3 border-t border-border/40 pt-2 space-y-2">
               {jwt ? (
-                <a
-                  href="/chat/account"
-                  className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                <button
+                  type="button"
+                  onClick={() => setAccountDrawerOpen(true)}
+                  className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors text-left"
                 >
                   <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary/15 text-[10px] font-medium text-primary">
                     {userId?.slice(0, 1).toUpperCase() ?? "•"}
                   </span>
-                  <span className="truncate">
+                  <span className="truncate flex-1">
                     Account {tier === "pro" && <span className="text-primary font-medium">· Pro</span>}
                   </span>
-                </a>
+                </button>
               ) : (
                 <button
                   type="button"
@@ -1145,6 +1159,16 @@ export default function Chat() {
                   Login
                 </button>
               )}
+
+              {/* hecz.dev mini-nav — small, unobtrusive, cross-surface links */}
+              <div className="flex items-center gap-3 px-2 pt-1 text-[10px] text-muted-foreground/60">
+                <a href="/" className="hover:text-foreground transition-colors">hecz.dev</a>
+                <span className="text-muted-foreground/30">·</span>
+                <a href="/blog" className="hover:text-foreground transition-colors">Blog</a>
+                <span className="text-muted-foreground/30">·</span>
+                <a href="/learn" className="hover:text-foreground transition-colors">Learn</a>
+              </div>
+
               <p className="text-[10px] text-muted-foreground/40 leading-relaxed">
                 Tag every model.
                 <br />
@@ -1681,6 +1705,15 @@ export default function Chat() {
         open={byokOpen}
         onClose={() => setByokOpen(false)}
         onKeysChange={setByokKeys}
+      />
+
+      <AccountDrawer
+        open={accountDrawerOpen}
+        onClose={() => setAccountDrawerOpen(false)}
+        jwt={jwt}
+        userId={userId}
+        tier={tier}
+        onUpgrade={() => { setAccountDrawerOpen(false); handleUpgrade(); }}
       />
 
       {/* Pro welcome modal — shown once after checkout return */}
