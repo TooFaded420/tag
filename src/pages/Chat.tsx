@@ -14,10 +14,12 @@ import {
   MessageSquarePlus,
   Pin,
   PinOff,
+  Search,
   Send,
   Settings2,
   Share2,
   Terminal,
+  Thermometer,
   Trash2,
   X,
 } from "lucide-react";
@@ -294,6 +296,24 @@ const STARTER_PROMPTS = [
   "Compare React vs Vue",
   "Write a haiku about shipping",
   "Summarize a topic for me",
+];
+
+// ---------------------------------------------------------------------------
+// Slash commands
+// ---------------------------------------------------------------------------
+
+interface SlashCommand {
+  trigger: string;
+  description: string;
+  text: string;
+}
+
+const SLASH_COMMANDS: SlashCommand[] = [
+  { trigger: "/summarize",   description: "Summarize in 5 bullets",         text: "Summarize this conversation in 5 bullet points." },
+  { trigger: "/tldr",        description: "2-sentence TL;DR",                text: "Give me a 2-sentence TL;DR of the conversation so far." },
+  { trigger: "/translate",   description: "Translate last reply",            text: "Translate the previous assistant reply to " },
+  { trigger: "/code-review", description: "Code review latest snippet",      text: "Code review the latest code block I shared. Focus on bugs, security, and clarity." },
+  { trigger: "/explain",     description: "Explain like I'm 16",             text: "Explain the previous assistant reply like I am a smart 16-year-old." },
 ];
 
 interface EmptyStateProps {
@@ -1207,48 +1227,7 @@ export default function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chat.messages]);
 
-  // ── Global keyboard shortcuts ────────────────────────────────────────────
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      const mod = e.metaKey || e.ctrlKey;
-      if (!mod) return;
-      // Cmd/Ctrl+K — focus composer
-      if (e.key === "k" && !e.shiftKey) {
-        e.preventDefault();
-        textareaRef.current?.focus();
-        return;
-      }
-      // Cmd/Ctrl+Shift+O — new thread
-      if (e.key === "o" && e.shiftKey) {
-        e.preventDefault();
-        createNewThread();
-        return;
-      }
-      // Cmd/Ctrl+/ — open BYOK drawer
-      if (e.key === "/") {
-        e.preventDefault();
-        setByokOpen(true);
-        return;
-      }
-    }
-    function onKeyUp(e: KeyboardEvent) {
-      // Esc — close any open drawer/panel
-      if (e.key === "Escape") {
-        setByokOpen(false);
-        setAccountDrawerOpen(false);
-        setMemoryDrawerOpen(false);
-        setSystemPromptOpen(false);
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-    };
-  }, [createNewThread]);
-
-  // ── Thread helpers ───────────────────────────────────────────────────────
+  // ── Thread helpers — declared BEFORE keyboard effect that depends on createNewThread ──
   const createNewThread = useCallback(() => {
     const newThread: Thread = {
       id: generateId(),
@@ -1268,6 +1247,62 @@ export default function Chat() {
     setInput("");
     setMemoryActive(false);
   }, [chat]);
+
+  // ── Global keyboard shortcuts ────────────────────────────────────────────
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      // Skip during IME composition (Japanese/Chinese/Korean input methods)
+      if (e.isComposing) return;
+
+      const mod = e.metaKey || e.ctrlKey;
+      const target = e.target as HTMLElement;
+      const inTextInput = target.tagName === "TEXTAREA" || target.tagName === "INPUT";
+
+      // Esc — close any open drawer/panel/search/slash (on keydown so IME Esc is safe)
+      if (e.key === "Escape") {
+        setByokOpen(false);
+        setAccountDrawerOpen(false);
+        setMemoryDrawerOpen(false);
+        setSystemPromptOpen(false);
+        setThreadSearch("");
+        setSlashOpen(false);
+        return;
+      }
+
+      if (!mod) return;
+
+      // Cmd/Ctrl+F — focus sidebar thread search (override browser find)
+      if (e.key === "f" && !e.shiftKey) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+      // Cmd/Ctrl+K — focus composer (skip if already typing in a text field)
+      if (e.key === "k" && !e.shiftKey) {
+        if (inTextInput) return;
+        e.preventDefault();
+        textareaRef.current?.focus();
+        return;
+      }
+      // Cmd/Ctrl+Shift+O — new thread
+      if (e.key === "o" && e.shiftKey) {
+        e.preventDefault();
+        createNewThread();
+        return;
+      }
+      // Cmd/Ctrl+/ — open BYOK drawer (skip if typing)
+      if (e.key === "/" && !inTextInput) {
+        e.preventDefault();
+        setByokOpen(true);
+        return;
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [createNewThread]);
 
   // On first load with no active thread, create one
   useEffect(() => {
@@ -1540,28 +1575,90 @@ export default function Chat() {
               />
             )}
 
-            {/* Threads label */}
-            <div className="px-3 pt-3 pb-1.5">
+            {/* Threads label + search */}
+            <div className="px-3 pt-3 pb-1.5 space-y-2">
               <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/50">
                 Conversations
               </span>
+              {/* Search box — Cmd+F focuses this */}
+              <div className="relative">
+                <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground/40 pointer-events-none" />
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  value={threadSearch}
+                  onChange={(e) => setThreadSearch(e.target.value)}
+                  placeholder="Search…"
+                  aria-label="Search conversations"
+                  className="w-full rounded-md border border-border/50 bg-background pl-6 pr-6 py-1 text-[11px] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40 transition-colors"
+                />
+                {threadSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setThreadSearch("")}
+                    aria-label="Clear search"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground/40 hover:text-foreground transition-colors"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
             </div>
 
-            {/* Thread list — filtered to active workspace, grouped by date bucket */}
+            {/* Thread list — filtered to active workspace, grouped by date bucket (flat when searching) */}
             <nav className="flex-1 overflow-y-auto px-1.5 pb-4">
               {(() => {
-                const visibleThreads = threads
+                const workspaceThreads = threads
                   .filter((t) => (t.workspace_id ?? null) === activeWorkspaceId)
                   .sort((a, b) => {
-                    // Pinned first, then by updatedAt desc within each group
                     if (a.pinned && !b.pinned) return -1;
                     if (!a.pinned && b.pinned) return 1;
                     return (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt);
                   });
-                if (visibleThreads.length === 0) {
+
+                const q = threadSearch.trim().toLowerCase();
+
+                // When searching: flat list filtered by title or any message body
+                if (q) {
+                  const matched = workspaceThreads.filter((t) => {
+                    if (t.title.toLowerCase().includes(q)) return true;
+                    return t.messages.some((m) => {
+                      const body = m.parts
+                        ? m.parts.filter((p) => p.type === "text").map((p) => ("text" in p ? p.text : "")).join("")
+                        : (m as unknown as { content?: string }).content ?? "";
+                      return body.toLowerCase().includes(q);
+                    });
+                  });
+                  return (
+                    <>
+                      <p className="px-2 pt-2 pb-1 font-mono text-[10px] text-muted-foreground/50">
+                        {matched.length} of {workspaceThreads.length} threads
+                      </p>
+                      {matched.length === 0 ? (
+                        <p className="px-2 py-2 text-xs text-muted-foreground/50">No matches.</p>
+                      ) : (
+                        <ul>
+                          {matched.map((thread) => (
+                            <ThreadRow
+                              key={thread.id}
+                              thread={thread}
+                              active={thread.id === activeThreadId}
+                              onSelect={() => selectThread(thread)}
+                              onDelete={() => deleteThread(thread.id)}
+                              onTogglePin={() => togglePinThread(thread.id)}
+                            />
+                          ))}
+                        </ul>
+                      )}
+                    </>
+                  );
+                }
+
+                // Normal: date bucket grouping
+                if (workspaceThreads.length === 0) {
                   return <p className="px-2 py-3 text-xs text-muted-foreground/50">No conversations yet.</p>;
                 }
-                const groups = groupThreadsByBucket(visibleThreads);
+                const groups = groupThreadsByBucket(workspaceThreads);
                 return groups.map(({ bucket, threads: bucketThreads }) => (
                   <div key={bucket}>
                     <p className="mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/50 px-2 pt-3 pb-1">
@@ -2228,6 +2325,68 @@ export default function Chat() {
                       )}
                     </div>
                   )}
+
+                  {/* Temperature slider — collapsed by default */}
+                  <div className="mx-auto max-w-2xl mb-2">
+                    <button
+                      type="button"
+                      onClick={() => setTempSliderOpen((o) => !o)}
+                      className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+                      title="Adjust creativity / temperature"
+                    >
+                      <Thermometer className="h-3 w-3" />
+                      <span>{temperature.toFixed(1)}</span>
+                    </button>
+                    {tempSliderOpen && (
+                      <div className="mt-1 flex items-center gap-3 px-1">
+                        <span className="text-[10px] text-muted-foreground/50 shrink-0">Precise</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={1.5}
+                          step={0.1}
+                          value={temperature}
+                          onChange={(e) => setTemperature(parseFloat(e.target.value))}
+                          className="flex-1 accent-primary h-1"
+                          aria-label="Temperature"
+                        />
+                        <span className="text-[10px] text-muted-foreground/50 shrink-0">Creative</span>
+                        <span className="font-mono text-[10px] text-primary/70 w-6 text-right shrink-0">{temperature.toFixed(1)}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Slash command autocomplete — shown above composer when input starts with / */}
+                  {slashOpen && (() => {
+                    const partial = input.slice(1).toLowerCase();
+                    const filtered = SLASH_COMMANDS.filter((c) => c.trigger.slice(1).startsWith(partial));
+                    if (filtered.length === 0) return null;
+                    return (
+                      <div className="mx-auto max-w-2xl mb-1 rounded-lg border border-border bg-card shadow-md overflow-hidden">
+                        {filtered.map((cmd, i) => (
+                          <button
+                            key={cmd.trigger}
+                            type="button"
+                            onMouseDown={(e) => {
+                              // mousedown so we beat the textarea blur
+                              e.preventDefault();
+                              setInput(cmd.text);
+                              setSlashOpen(false);
+                              setTimeout(() => textareaRef.current?.focus(), 0);
+                            }}
+                            className={cn(
+                              "w-full flex items-baseline gap-3 px-3 py-2 text-left transition-colors hover:bg-muted",
+                              i !== 0 && "border-t border-border/40"
+                            )}
+                          >
+                            <span className="font-mono text-[11px] text-primary shrink-0">{cmd.trigger}</span>
+                            <span className="text-xs text-muted-foreground truncate">{cmd.description}</span>
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
+
                   <form
                     onSubmit={(e) => {
                       e.preventDefault();
@@ -2236,22 +2395,43 @@ export default function Chat() {
                       hasSentThisSessionRef.current = true;
                       chat.sendMessage({ text: input });
                       setInput("");
+                      setSlashOpen(false);
                     }}
                     className="mx-auto flex max-w-2xl items-end gap-2 rounded-xl border border-border bg-background px-3 py-2.5 shadow-sm focus-within:border-primary/50 transition-colors"
                   >
                     <textarea
                       ref={textareaRef}
                       className="flex-1 resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none disabled:opacity-50 leading-relaxed max-h-40"
-                      placeholder={MODELS.find((m) => m.id === model)?.modality === "image" ? "Describe an image…" : "Message Tag…"}
+                      placeholder={MODELS.find((m) => m.id === model)?.modality === "image" ? "Describe an image…" : "Message Tag… (type / for commands)"}
                       rows={1}
                       value={input}
                       onChange={(e) => {
-                        setInput(e.target.value);
+                        const val = e.target.value;
+                        setInput(val);
                         e.target.style.height = "auto";
                         e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+                        // Show slash command dropdown when input starts with / and has no spaces yet
+                        setSlashOpen(val.startsWith("/") && !val.includes(" "));
                       }}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
+                        // Tab or Enter to insert slash command
+                        if (slashOpen && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
+                          const partial = input.slice(1).toLowerCase();
+                          const filtered = SLASH_COMMANDS.filter((c) => c.trigger.slice(1).startsWith(partial));
+                          if (filtered.length > 0) {
+                            e.preventDefault();
+                            setInput(filtered[0].text);
+                            setSlashOpen(false);
+                            return;
+                          }
+                        }
+                        // Esc to close slash dropdown
+                        if (e.key === "Escape" && slashOpen) {
+                          e.preventDefault();
+                          setSlashOpen(false);
+                          return;
+                        }
+                        if (e.key === "Enter" && !e.shiftKey && !slashOpen) {
                           e.preventDefault();
                           if (!canSend) return;
                           if (!activeThreadId) createNewThread();
