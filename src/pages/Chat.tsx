@@ -20,6 +20,8 @@ import { cn } from "@/lib/utils";
 import { ModelPicker, MODELS } from "@/components/chat/ModelPicker";
 import { BYOKDrawer, readBYOKKeys } from "@/components/chat/BYOKDrawer";
 import { AccountDrawer } from "@/components/chat/AccountDrawer";
+import { WorkspaceSwitcher } from "@/components/chat/WorkspaceSwitcher";
+import { InviteDialog } from "@/components/chat/InviteDialog";
 import { TurnstileGate } from "@/components/chat/TurnstileGate";
 import { MemoryPanel } from "@/components/chat/MemoryPanel";
 import { CompareView } from "@/components/chat/CompareView";
@@ -140,6 +142,7 @@ const DEFAULT_MODEL = MODELS[0].id;
 const THREAD_STORAGE_KEY = "tag_threads_v1";
 const ACTIVE_THREAD_KEY = "tag_active_thread_v1";
 const ANON_SESSION_KEY = "tag_anon_session_v1";
+const TAG_ACTIVE_WORKSPACE_KEY = "tag_active_workspace_v1";
 
 // ---------------------------------------------------------------------------
 // Thread management types + helpers
@@ -150,6 +153,7 @@ interface Thread {
   title: string;
   createdAt: number;
   messages: Message[];
+  workspace_id?: string | null;
 }
 
 function generateId(): string {
@@ -197,7 +201,7 @@ interface Mem0Memory {
   created_at: string;
 }
 
-async function searchMemories(query: string, jwt: string): Promise<Mem0Memory[]> {
+async function searchMemories(query: string, jwt: string, workspaceId?: string | null): Promise<Mem0Memory[]> {
   // 3s timeout — memory search is a nice-to-have, must NEVER block the chat
   // send. Before the timeout, a hanging mem0-search hung the entire fetch
   // wrapper and produced "no reply" for the signed-in user. Worst case now:
@@ -211,7 +215,11 @@ async function searchMemories(query: string, jwt: string): Promise<Mem0Memory[]>
         "Content-Type": "application/json",
         Authorization: `Bearer ${jwt}`,
       },
-      body: JSON.stringify({ query, limit: 5 }),
+      body: JSON.stringify({
+        query,
+        limit: 5,
+        ...(workspaceId ? { workspace_id: workspaceId } : {}),
+      }),
       signal: ctrl.signal,
     });
     if (!res.ok) return [];
@@ -224,14 +232,17 @@ async function searchMemories(query: string, jwt: string): Promise<Mem0Memory[]>
   }
 }
 
-function writeMemory(content: string, jwt: string): void {
+function writeMemory(content: string, jwt: string, workspaceId?: string | null): void {
   fetch(`${SUPABASE_URL}/functions/v1/mem0-write`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${jwt}`,
     },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({
+      content,
+      ...(workspaceId ? { workspace_id: workspaceId } : {}),
+    }),
   }).catch(() => {});
 }
 
@@ -409,6 +420,18 @@ export default function Chat() {
   const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
   const [accountDrawerOpen, setAccountDrawerOpen] = useState(false);
   const [showError, setShowError] = useState(false);
+
+  // ── Workspace state ─────────────────────────────────────────────────────
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(() => {
+    // ?ws=<uuid> query param takes priority (set by InviteAccept after joining)
+    try {
+      const wsParam = new URLSearchParams(window.location.search).get("ws");
+      if (wsParam) return wsParam;
+      return localStorage.getItem(TAG_ACTIVE_WORKSPACE_KEY) ?? null;
+    } catch { return null; }
+  });
+  const [inviteDialogWorkspaceId, setInviteDialogWorkspaceId] = useState<string | null>(null);
+  const activeWorkspaceIdRef = useRef(activeWorkspaceId);
   const [upgradeError, setUpgradeError] = useState<string | null>(null);
   // Track if user has actively sent during THIS session — guards the error banner
   // against stale chat.error rehydrated from restored threads on page mount.
@@ -435,6 +458,24 @@ export default function Chat() {
   const pendingFileNoteRef = useRef(pendingFileNote);
   useEffect(() => { byokKeysRef.current = byokKeys; }, [byokKeys]);
   useEffect(() => { pendingFileNoteRef.current = pendingFileNote; }, [pendingFileNote]);
+  useEffect(() => { activeWorkspaceIdRef.current = activeWorkspaceId; }, [activeWorkspaceId]);
+
+  // Persist active workspace to localStorage; clear ?ws= param after reading it
+  useEffect(() => {
+    try {
+      if (activeWorkspaceId) {
+        localStorage.setItem(TAG_ACTIVE_WORKSPACE_KEY, activeWorkspaceId);
+      } else {
+        localStorage.removeItem(TAG_ACTIVE_WORKSPACE_KEY);
+      }
+    } catch {}
+    // Clear ?ws= from URL once consumed
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("ws")) {
+      url.searchParams.delete("ws");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }, [activeWorkspaceId]);
   const [showProWelcome, setShowProWelcome] = useState(() => {
     try {
       if (localStorage.getItem(PRO_WELCOMED_KEY)) return false;
@@ -583,6 +624,7 @@ export default function Chat() {
       const liveModel = modelRef.current;
       const liveByokKeys = byokKeysRef.current;
       const livePendingFileNote = pendingFileNoteRef.current;
+      const liveWorkspaceId = activeWorkspaceIdRef.current;
       const reqBody = init?.body ? JSON.parse(init.body as string) : {};
       // Diagnostic — exposes whether the send is even firing and with what
       // identity. If signed-in chats stop working again, the user can paste
@@ -693,7 +735,7 @@ export default function Chat() {
         // Promise.race guarantees we move on. Memory is best-effort decoration,
         // never a gate.
         const memories: Mem0Memory[] = await Promise.race([
-          searchMemories(latestUserContent, liveJwt),
+          searchMemories(latestUserContent, liveJwt, liveWorkspaceId),
           new Promise<Mem0Memory[]>((resolve) => setTimeout(() => resolve([]), 3500)),
         ]);
         if (memories.length > 0) {
@@ -879,7 +921,7 @@ export default function Chat() {
 
       if (liveJwt && latestUserContent && latestUserContent.length >= 20 && latestUserContent !== lastWrittenMemoryRef.current) {
         lastWrittenMemoryRef.current = latestUserContent;
-        writeMemory(latestUserContent, liveJwt);
+        writeMemory(latestUserContent, liveJwt, liveWorkspaceId);
       }
 
       // AI SDK v6 UI Message Stream protocol — SSE with typed JSON events.
@@ -980,6 +1022,7 @@ export default function Chat() {
       title: "",
       createdAt: Date.now(),
       messages: [],
+      workspace_id: activeWorkspaceIdRef.current,
     };
     setThreads((prev) => {
       const updated = [newThread, ...prev];
@@ -1168,6 +1211,19 @@ export default function Chat() {
               </button>
             </div>
 
+            {/* Workspace switcher — only shown to signed-in users */}
+            {jwt && (
+              <WorkspaceSwitcher
+                activeWorkspaceId={activeWorkspaceId}
+                onSwitch={(id) => {
+                  setActiveWorkspaceId(id);
+                  createNewThread();
+                }}
+                userId={userId}
+                onInviteClick={(wsId) => setInviteDialogWorkspaceId(wsId)}
+              />
+            )}
+
             {/* Threads label */}
             <div className="px-3 pt-3 pb-1.5">
               <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/50">
@@ -1175,23 +1231,28 @@ export default function Chat() {
               </span>
             </div>
 
-            {/* Thread list */}
+            {/* Thread list — filtered to active workspace (null = personal) */}
             <nav className="flex-1 overflow-y-auto px-1.5 pb-4">
-              {threads.length === 0 ? (
-                <p className="px-2 py-3 text-xs text-muted-foreground/50">No conversations yet.</p>
-              ) : (
-                <ul>
-                  {threads.map((thread) => (
-                    <ThreadRow
-                      key={thread.id}
-                      thread={thread}
-                      active={thread.id === activeThreadId}
-                      onSelect={() => selectThread(thread)}
-                      onDelete={() => deleteThread(thread.id)}
-                    />
-                  ))}
-                </ul>
-              )}
+              {(() => {
+                const visibleThreads = threads.filter(
+                  (t) => (t.workspace_id ?? null) === activeWorkspaceId
+                );
+                return visibleThreads.length === 0 ? (
+                  <p className="px-2 py-3 text-xs text-muted-foreground/50">No conversations yet.</p>
+                ) : (
+                  <ul>
+                    {visibleThreads.map((thread) => (
+                      <ThreadRow
+                        key={thread.id}
+                        thread={thread}
+                        active={thread.id === activeThreadId}
+                        onSelect={() => selectThread(thread)}
+                        onDelete={() => deleteThread(thread.id)}
+                      />
+                    ))}
+                  </ul>
+                );
+              })()}
             </nav>
 
             {/* Sidebar footer — Login / Account + hecz.dev mini-nav + tagline */}
@@ -1820,6 +1881,15 @@ export default function Chat() {
       {/* Pro welcome modal — shown once after checkout return */}
       {showProWelcome && (
         <ProWelcomeModal onDismiss={() => setShowProWelcome(false)} />
+      )}
+
+      {/* Workspace invite dialog */}
+      {inviteDialogWorkspaceId && (
+        <InviteDialog
+          workspaceId={inviteDialogWorkspaceId}
+          open={!!inviteDialogWorkspaceId}
+          onClose={() => setInviteDialogWorkspaceId(null)}
+        />
       )}
     </>
   );
