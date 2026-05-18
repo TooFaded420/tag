@@ -74,8 +74,8 @@ async function embedText(text: string): Promise<number[]> {
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return optionsResponse();
-  if (req.method !== "POST") return errorResponse({ error: "POST required" }, 405);
+  if (req.method === "OPTIONS") return optionsResponse(req);
+  if (req.method !== "POST") return errorResponse({ error: "POST required" }, 405, req);
   const reqStart = Date.now();
 
   // Guard: synthetic.new must be configured
@@ -86,27 +86,28 @@ serve(async (req) => {
         hint: "Set SYNTHETIC_API_KEY in Supabase project secrets dashboard",
       },
       503,
+      req,
     );
   }
 
   // Auth: extract user_id from Supabase JWT
   const userId = await getUserId(req);
   if (!userId) {
-    return errorResponse({ error: "unauthorized — valid Supabase JWT required" }, 401);
+    return errorResponse({ error: "unauthorized — valid Supabase JWT required" }, 401, req);
   }
 
   let body: { content: string; importance?: number; metadata?: Record<string, unknown>; workspace_id?: string };
   try {
     body = await readJson<typeof body>(req);
   } catch (err) {
-    return errorResponse({ error: err instanceof Error ? err.message : "invalid body" }, 400);
+    return errorResponse({ error: err instanceof Error ? err.message : "invalid body" }, 400, req);
   }
 
   const { content, importance = 0.5, metadata = {}, workspace_id } = body;
   const imp = Math.min(1, Math.max(0, Number(importance) || 0.5));
 
   if (!content || typeof content !== "string" || content.trim().length === 0) {
-    return errorResponse({ error: "content is required and must be a non-empty string" }, 400);
+    return errorResponse({ error: "content is required and must be a non-empty string" }, 400, req);
   }
 
   // Embed content via synthetic.new
@@ -116,7 +117,7 @@ serve(async (req) => {
   } catch (err) {
     console.error("mem0-write: embedding failed:", err instanceof Error ? err.message : err);
     logRequest({ route: "mem0-write", status: "upstream_error", start: reqStart, user_id: userId });
-    return errorResponse({ error: "failed to write memory" }, 502);
+    return errorResponse({ error: "failed to write memory" }, 502, req);
   }
 
   // Insert into chat_memories via service role client
@@ -146,9 +147,9 @@ serve(async (req) => {
   if (error) {
     console.error("mem0-write: insert failed:", error.message);
     logRequest({ route: "mem0-write", status: "upstream_error", start: reqStart, user_id: userId });
-    return errorResponse({ error: "failed to write memory" }, 500);
+    return errorResponse({ error: "failed to write memory" }, 500, req);
   }
 
   logRequest({ route: "mem0-write", status: "ok", start: reqStart, user_id: userId });
-  return jsonResponse({ id: (data as any).id, created_at: (data as any).created_at });
+  return jsonResponse({ id: (data as any).id, created_at: (data as any).created_at }, undefined, req);
 });

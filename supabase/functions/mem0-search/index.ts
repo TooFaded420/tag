@@ -74,8 +74,8 @@ async function embedText(text: string): Promise<number[]> {
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return optionsResponse();
-  if (req.method !== "POST") return errorResponse({ error: "POST required" }, 405);
+  if (req.method === "OPTIONS") return optionsResponse(req);
+  if (req.method !== "POST") return errorResponse({ error: "POST required" }, 405, req);
   const reqStart = Date.now();
 
   // Guard: synthetic.new must be configured
@@ -86,26 +86,27 @@ serve(async (req) => {
         hint: "Set SYNTHETIC_API_KEY in Supabase project secrets dashboard",
       },
       503,
+      req,
     );
   }
 
   // Auth: extract user_id from Supabase JWT
   const userId = await getUserId(req);
   if (!userId) {
-    return errorResponse({ error: "unauthorized — valid Supabase JWT required" }, 401);
+    return errorResponse({ error: "unauthorized — valid Supabase JWT required" }, 401, req);
   }
 
   let body: { query: string; limit?: number; min_similarity?: number; workspace_id?: string };
   try {
     body = await readJson<typeof body>(req);
   } catch (err) {
-    return errorResponse({ error: err instanceof Error ? err.message : "invalid body" }, 400);
+    return errorResponse({ error: err instanceof Error ? err.message : "invalid body" }, 400, req);
   }
 
   const { query, limit = 5, min_similarity = 0.7, workspace_id } = body;
 
   if (!query || typeof query !== "string" || query.trim().length === 0) {
-    return errorResponse({ error: "query is required and must be a non-empty string" }, 400);
+    return errorResponse({ error: "query is required and must be a non-empty string" }, 400, req);
   }
 
   // Embed query via synthetic.new
@@ -115,7 +116,7 @@ serve(async (req) => {
   } catch (err) {
     console.error("mem0-search: embedding failed:", err instanceof Error ? err.message : err);
     logRequest({ route: "mem0-search", status: "upstream_error", start: reqStart, user_id: userId });
-    return errorResponse({ error: "embedding failed", detail: err instanceof Error ? err.message : "unknown" }, 502);
+    return errorResponse({ error: "embedding failed", detail: err instanceof Error ? err.message : "unknown" }, 502, req);
   }
 
   // Call match_chat_memories RPC via USER-JWT client (not service role).
@@ -153,7 +154,7 @@ serve(async (req) => {
   if (error) {
     console.error("mem0-search: RPC failed:", error.message);
     logRequest({ route: "mem0-search", status: "upstream_error", start: reqStart, user_id: userId });
-    return errorResponse({ error: "memory search failed", detail: error.message }, 500);
+    return errorResponse({ error: "memory search failed", detail: error.message }, 500, req);
   }
 
   // TODO: remove `as any` cast when Supabase types include match_chat_memories return type
@@ -166,5 +167,5 @@ serve(async (req) => {
   }));
 
   logRequest({ route: "mem0-search", status: "ok", start: reqStart, user_id: userId, results: memories.length });
-  return jsonResponse({ memories });
+  return jsonResponse({ memories }, undefined, req);
 });

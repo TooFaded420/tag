@@ -6,9 +6,9 @@ import { errorResponse, jsonResponse, optionsResponse } from "../_shared/http.ts
 import { logRequest } from "../_shared/log.ts";
 
 serve(async (req: Request) => {
-  if (req.method === "OPTIONS") return optionsResponse();
+  if (req.method === "OPTIONS") return optionsResponse(req);
   if (req.method !== "POST") {
-    return errorResponse({ error: "Method not allowed" }, 405);
+    return errorResponse({ error: "Method not allowed" }, 405, req);
   }
   const reqStart = Date.now();
 
@@ -16,13 +16,13 @@ serve(async (req: Request) => {
   const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
   if (!stripeSecretKey) {
     console.error("tag-pro-checkout: STRIPE_SECRET_KEY not configured");
-    return errorResponse({ error: "Payment processing not configured." }, 503);
+    return errorResponse({ error: "Payment processing not configured." }, 503, req);
   }
 
   const stripePriceId = Deno.env.get("STRIPE_TAG_PRO_PRICE_ID");
   if (!stripePriceId) {
     console.error("tag-pro-checkout: STRIPE_TAG_PRO_PRICE_ID not configured");
-    return errorResponse({ error: "Tag Pro price not configured." }, 503);
+    return errorResponse({ error: "Tag Pro price not configured." }, 503, req);
   }
 
   const siteUrl = Deno.env.get("SITE_URL") || "https://hecz.dev";
@@ -30,7 +30,7 @@ serve(async (req: Request) => {
   // ── Auth: require valid Supabase JWT ────────────────────────────────────────
   const authHeader = req.headers.get("Authorization") ?? req.headers.get("authorization") ?? "";
   if (!authHeader.toLowerCase().startsWith("bearer ")) {
-    return errorResponse({ error: "Missing Authorization: Bearer header" }, 401);
+    return errorResponse({ error: "Missing Authorization: Bearer header" }, 401, req);
   }
   const jwt = authHeader.slice(7).trim();
 
@@ -44,7 +44,7 @@ serve(async (req: Request) => {
 
   const { data: { user }, error: authError } = await userClient.auth.getUser();
   if (authError || !user) {
-    return errorResponse({ error: "Unauthorized" }, 401);
+    return errorResponse({ error: "Unauthorized" }, 401, req);
   }
 
   const userId = user.id;
@@ -58,7 +58,7 @@ serve(async (req: Request) => {
     .eq("id", userId)
     .maybeSingle();
   if (profile?.tier === "pro") {
-    return errorResponse({ error: "already_subscribed" }, 409);
+    return errorResponse({ error: "already_subscribed" }, 409, req);
   }
 
   // ── Create Stripe Checkout Session ─────────────────────────────────────────
@@ -87,11 +87,11 @@ serve(async (req: Request) => {
     });
 
     logRequest({ route: "tag-pro-checkout", status: "ok", start: reqStart, user_id: userId });
-    return jsonResponse({ url: session.url });
+    return jsonResponse({ url: session.url }, undefined, req);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("tag-pro-checkout: Stripe error:", msg);
     logRequest({ route: "tag-pro-checkout", status: "upstream_error", start: reqStart, user_id: userId, error: msg });
-    return errorResponse({ error: `Stripe: ${msg}` }, 500);
+    return errorResponse({ error: `Stripe: ${msg}` }, 500, req);
   }
 });
