@@ -413,13 +413,6 @@ export default function Chat() {
   // against stale chat.error rehydrated from restored threads on page mount.
   const hasSentThisSessionRef = useRef(false);
 
-  // Image generation results keyed by message-id.
-  // The fetch wrapper injects a __IMAGE_RESULT__ sentinel into the SSE stream;
-  // the render loop detects it and swaps in <ImageBubble> instead of markdown.
-  const [imageResults, setImageResults] = useState<
-    Record<string, { imageUrl: string; prompt: string; model: string }>
-  >({});
-
   // Mirror state to refs so the chat transport (constructed ONCE on mount)
   // can read live values at request time instead of capturing stale snapshots.
   // Without this, jwt/turnstileToken/anonSession/model captured on first render
@@ -634,6 +627,65 @@ export default function Chat() {
         setPendingFileNote(null);
       }
 
+      // ── Image generation path ─────────────────────────────────────────────
+      // Early-return BEFORE memory lookup — image generation doesn't use memory
+      // context and waiting up to 3.5s for it before starting generation is wasteful.
+      const selectedModelMeta = MODELS.find((m) => m.id === liveModel);
+      if (selectedModelMeta?.modality === "image") {
+        const imagePrompt = latestUserContent;
+        const imgRes = await fetch(IMAGE_PROXY_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(liveJwt ? { Authorization: `Bearer ${liveJwt}` } : {}),
+          },
+          body: JSON.stringify({ model: liveModel, prompt: imagePrompt }),
+        });
+
+        if (!imgRes.ok) {
+          let errMsg = "Image generation failed";
+          try {
+            const errData = await imgRes.json();
+            errMsg = errData?.error ?? errMsg;
+          } catch {}
+          throw new Error(errMsg);
+        }
+
+        const imgData = await imgRes.json();
+        const imageUrl: string = imgData.image_url ?? "";
+
+        // Embed image data directly into the sentinel so it survives reload.
+        // The render loop parses the JSON payload — no in-memory map needed.
+        const sentinel = `__IMAGE_RESULT__:${JSON.stringify({ image_url: imageUrl, prompt: imagePrompt, model: liveModel })}`;
+        const textId = `text-${Date.now()}`;
+        const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const stream = new ReadableStream({
+          start(controller) {
+            const encoder = new TextEncoder();
+            const send = (obj: unknown) =>
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
+            send({ type: "start", messageId });
+            send({ type: "start-step" });
+            send({ type: "text-start", id: textId });
+            send({ type: "text-delta", id: textId, delta: sentinel });
+            send({ type: "text-end", id: textId });
+            send({ type: "finish-step" });
+            send({ type: "finish" });
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+          },
+        });
+
+        return new Response(stream, {
+          status: 200,
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache, no-transform",
+            "x-vercel-ai-ui-message-stream": "v1",
+          },
+        });
+      }
+
       if (liveJwt && latestUserContent) {
         // Hard 3.5s ceiling on memory injection — even if the in-function
         // abort doesn't kick in (e.g. network stack swallows signal), this
@@ -668,74 +720,6 @@ export default function Chat() {
             }
           }
         }
-      }
-
-      // ── Image generation path ─────────────────────────────────────────────
-      // If the selected model has modality="image", skip the chat proxy and
-      // hit the image proxy instead. Memory injection is skipped for images
-      // (image prompts aren't useful as persistent memory).
-      const selectedModelMeta = MODELS.find((m) => m.id === liveModel);
-      if (selectedModelMeta?.modality === "image") {
-        const imagePrompt = latestUserContent;
-        const imgRes = await fetch(IMAGE_PROXY_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(liveJwt ? { Authorization: `Bearer ${liveJwt}` } : {}),
-          },
-          body: JSON.stringify({ model: liveModel, prompt: imagePrompt }),
-        });
-
-        if (!imgRes.ok) {
-          let errMsg = "Image generation failed";
-          try {
-            const errData = await imgRes.json();
-            errMsg = errData?.error ?? errMsg;
-          } catch {}
-          throw new Error(errMsg);
-        }
-
-        const imgData = await imgRes.json();
-        const imageUrl: string = imgData.image_url ?? "";
-
-        // Store result so the render loop can display it.
-        // We generate a deterministic message-id that matches what the AI SDK
-        // assigns via the SSE stream we're about to return.
-        const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        setImageResults((prev) => ({
-          ...prev,
-          [messageId]: { imageUrl, prompt: imagePrompt, model: liveModel },
-        }));
-
-        // Return a synthetic SSE stream. The text content is a sentinel that
-        // the render loop detects to look up the imageResults entry.
-        const sentinel = `__IMAGE_RESULT__:${messageId}`;
-        const textId = `text-${Date.now()}`;
-        const stream = new ReadableStream({
-          start(controller) {
-            const encoder = new TextEncoder();
-            const send = (obj: unknown) =>
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
-            send({ type: "start", messageId });
-            send({ type: "start-step" });
-            send({ type: "text-start", id: textId });
-            send({ type: "text-delta", id: textId, delta: sentinel });
-            send({ type: "text-end", id: textId });
-            send({ type: "finish-step" });
-            send({ type: "finish" });
-            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-            controller.close();
-          },
-        });
-
-        return new Response(stream, {
-          status: 200,
-          headers: {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache, no-transform",
-            "x-vercel-ai-ui-message-stream": "v1",
-          },
-        });
       }
 
       const DIRECT_BYOK_PROVIDERS: Record<string, string> = {
@@ -1542,13 +1526,19 @@ export default function Chat() {
                               );
                             }
 
-                            // Detect image generation sentinel injected by the fetch wrapper
-                            const imageResultId = content.startsWith("__IMAGE_RESULT__:")
-                              ? content.slice("__IMAGE_RESULT__:".length).trim()
-                              : null;
-                            const imageResult = imageResultId
-                              ? (imageResults[imageResultId] ?? null)
-                              : null;
+                            // Detect image generation sentinel injected by the fetch wrapper.
+                            // Format: __IMAGE_RESULT__:<JSON> where JSON has image_url/prompt/model.
+                            // Data is embedded in the sentinel (not an in-memory map) so it
+                            // survives page reload.
+                            let imageResult: { imageUrl: string; prompt: string; model: string } | null = null;
+                            if (content.startsWith("__IMAGE_RESULT__:")) {
+                              try {
+                                const raw = JSON.parse(content.slice("__IMAGE_RESULT__:".length).trim());
+                                imageResult = { imageUrl: raw.image_url ?? "", prompt: raw.prompt ?? "", model: raw.model ?? "" };
+                              } catch {
+                                imageResult = null;
+                              }
+                            }
 
                             return (
                               <div key={msg.id} className="flex items-start gap-2.5">
