@@ -5,7 +5,8 @@ import { cn } from "@/lib/utils";
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
 const FILE_INGEST_URL = `${SUPABASE_URL}/functions/v1/tag-file-ingest`;
 
-const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB
+const MAX_FILE_BYTES_TEXT = 5 * 1024 * 1024; // 5 MB — text files
+const MAX_FILE_BYTES_PDF = 10 * 1024 * 1024; // 10 MB — PDFs
 
 // Accepted mime types (must match edge function)
 const ACCEPTED_MIMES = [
@@ -76,7 +77,7 @@ function toBase64(file: File): Promise<string> {
 type UploadState =
   | { status: "idle" }
   | { status: "uploading"; filename: string; progress: number }
-  | { status: "success"; filename: string; chunks: number }
+  | { status: "success"; filename: string; chunks: number; pages?: number }
   | { status: "error"; message: string };
 
 interface FileDropzoneProps {
@@ -109,15 +110,18 @@ export function FileDropzone({ jwt, tier, onIngested }: FileDropzoneProps) {
     if (!isAcceptedFile(file)) {
       setUploadState({
         status: "error",
-        message: `Unsupported file type: ${file.name}. Accepted: text, markdown, JSON, code files.`,
+        message: `Unsupported file type: ${file.name}. Accepted: PDF, text, markdown, JSON, code files.`,
       });
       return;
     }
 
-    if (file.size > MAX_FILE_BYTES) {
+    const isPdf = resolvedMime(file) === "application/pdf";
+    const maxBytes = isPdf ? MAX_FILE_BYTES_PDF : MAX_FILE_BYTES_TEXT;
+    const maxLabel = isPdf ? "10 MB" : "5 MB";
+    if (file.size > maxBytes) {
       setUploadState({
         status: "error",
-        message: `File too large: ${(file.size / 1024 / 1024).toFixed(1)} MB. Maximum is 5 MB.`,
+        message: `File too large: ${(file.size / 1024 / 1024).toFixed(1)} MB. Maximum is ${maxLabel}.`,
       });
       return;
     }
@@ -153,7 +157,7 @@ export function FileDropzone({ jwt, tier, onIngested }: FileDropzoneProps) {
 
     setUploadState({ status: "uploading", filename: file.name, progress: 90 });
 
-    let data: { filename?: string; chunks_stored?: number; summary?: string; error?: string };
+    let data: { filename?: string; chunks_stored?: number; pages_processed?: number; summary?: string; error?: string };
     try {
       data = await res.json();
     } catch {
@@ -163,7 +167,7 @@ export function FileDropzone({ jwt, tier, onIngested }: FileDropzoneProps) {
     if (!res.ok) {
       const msg =
         res.status === 413
-          ? "File too large (max 5 MB)."
+          ? (data.error ?? "File too large.")
           : res.status === 415
           ? (data.error ?? "Unsupported file type.")
           : res.status === 401
@@ -176,9 +180,10 @@ export function FileDropzone({ jwt, tier, onIngested }: FileDropzoneProps) {
     }
 
     const chunks = data.chunks_stored ?? 0;
+    const pages = data.pages_processed;
     const summary = data.summary ?? `Stored ${chunks} chunk${chunks !== 1 ? "s" : ""} from ${file.name}.`;
 
-    setUploadState({ status: "success", filename: file.name, chunks });
+    setUploadState({ status: "success", filename: file.name, chunks, pages });
     onIngested(summary);
 
     // Auto-clear success after 8 s
@@ -254,7 +259,7 @@ export function FileDropzone({ jwt, tier, onIngested }: FileDropzoneProps) {
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        title={tier !== "pro" ? "Pro feature — upload files to chat" : "Upload file (max 5 MB)"}
+        title={tier !== "pro" ? "Pro feature — upload files to chat" : "Upload file — PDF, markdown, code, or text (max 10 MB for PDF, 5 MB for text)"}
         aria-label="Upload file"
         className={cn(
           "flex h-8 w-8 items-center justify-center rounded-md transition-colors",
@@ -303,7 +308,7 @@ export function FileDropzone({ jwt, tier, onIngested }: FileDropzoneProps) {
             {uploadState.status === "uploading" &&
               `Uploading ${uploadState.filename}… ${uploadState.progress}%`}
             {uploadState.status === "success" &&
-              `${uploadState.filename} — ${uploadState.chunks} chunk${uploadState.chunks !== 1 ? "s" : ""} stored in memory.`}
+              `${uploadState.filename} — ${uploadState.chunks} chunk${uploadState.chunks !== 1 ? "s" : ""}${uploadState.pages !== undefined ? ` across ${uploadState.pages} page${uploadState.pages !== 1 ? "s" : ""}` : ""} stored in memory.`}
             {uploadState.status === "error" && uploadState.message}
           </p>
           {(uploadState.status === "success" || uploadState.status === "error") && (
