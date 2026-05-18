@@ -328,19 +328,34 @@ serve(async (req) => {
   const ip = getClientIp(req);
 
   // ── Auth: extract JWT if present ─────────────────────────────────────────
-  const authHeader = req.headers.get("authorization") ?? "";
-  const jwt = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  // Accept both casings; modern fetch lowercases but be defensive.
+  const authHeader =
+    req.headers.get("Authorization") ?? req.headers.get("authorization") ?? "";
+  const jwt = authHeader.toLowerCase().startsWith("bearer ")
+    ? authHeader.slice(7).trim()
+    : null;
 
-  // Supabase client (anon key — for auth.getUser and RPC)
+  // Build the Supabase client matching the pattern used by tag-pro-checkout /
+  // mem0-search (capital A header, getUser() with no arg). The previous
+  // pattern (lowercase header + getUser(jwt) explicit arg) was rejecting
+  // valid JWTs in some flows — likely because passing the JWT explicitly
+  // doesn't go through the supabase-js auth helper's normal session path.
   const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    global: { headers: authHeader ? { authorization: authHeader } : {} },
+    global: jwt ? { headers: { Authorization: `Bearer ${jwt}` } } : {},
+    auth: { persistSession: false, autoRefreshToken: false },
   });
 
   let userId: string | null = null;
   if (jwt) {
-    const { data, error } = await supabase.auth.getUser(jwt);
+    const { data, error } = await supabase.auth.getUser();
     if (error || !data?.user) {
-      return errorResponse({ error: "Invalid or expired JWT" }, 401);
+      // Surface why so future "Session expired" debugging isn't a black box.
+      const reason = error?.message ?? "no user in response";
+      console.warn("[synthetic-public-proxy] JWT validation failed:", reason);
+      return errorResponse(
+        { error: "Invalid or expired JWT", reason },
+        401,
+      );
     }
     userId = data.user.id;
   }
