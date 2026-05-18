@@ -12,6 +12,7 @@ import {
   Menu,
   MessageSquarePlus,
   Send,
+  Share2,
   Terminal,
   Trash2,
   X,
@@ -420,6 +421,8 @@ export default function Chat() {
   const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
   const [accountDrawerOpen, setAccountDrawerOpen] = useState(false);
   const [showError, setShowError] = useState(false);
+  const [shareStatus, setShareStatus] = useState<"idle" | "sharing" | "copied">("idle");
+  const [shareToken, setShareToken] = useState<string | null>(null);
 
   // ── Workspace state ─────────────────────────────────────────────────────
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(() => {
@@ -1113,6 +1116,31 @@ export default function Chat() {
     setPendingFileNote(summary);
   }
 
+  async function handleShare() {
+    if (!jwt) return; // gate: signed-in only
+    if (shareStatus === "sharing") return;
+    const activeThread = threads.find((t) => t.id === activeThreadId);
+    if (!activeThread || activeThread.messages.length === 0) return;
+
+    setShareStatus("sharing");
+    try {
+      // TODO: remove `as any` once types regenerated after migration
+      const { data: token, error } = await (supabase as any).rpc("create_shared_thread", {
+        p_title: activeThread.title || "Untitled",
+        p_messages: activeThread.messages,
+        p_model: model,
+      });
+      if (error) throw error;
+      const url = `${window.location.origin}/chat/share/${token as string}`;
+      setShareToken(token as string);
+      await navigator.clipboard.writeText(url);
+      setShareStatus("copied");
+      setTimeout(() => setShareStatus("idle"), 4000);
+    } catch {
+      setShareStatus("idle");
+    }
+  }
+
   const isEmpty = chat.messages.length === 0;
 
   // ── Starter prompt pick — sets input and focuses textarea; does not send ──
@@ -1401,6 +1429,46 @@ export default function Chat() {
                   {memoryActive ? "Memory on" : "Memory"}
                 </span>
               </button>
+            )}
+
+            {/* Share button — signed-in + chat mode + has messages only */}
+            {view === "chat" && (
+              jwt ? (
+                shareStatus === "copied" ? (
+                  <a
+                    href={`/chat/share/${shareToken}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-primary bg-primary/10 hover:bg-primary/15 transition-colors"
+                  >
+                    <Share2 className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline text-[11px]">Copied!</span>
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleShare}
+                    disabled={shareStatus === "sharing" || chat.messages.length === 0}
+                    title={chat.messages.length === 0 ? "Start a conversation to share" : "Share this conversation"}
+                    className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40"
+                  >
+                    <Share2 className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline text-[11px]">
+                      {shareStatus === "sharing" ? "Sharing…" : "Share"}
+                    </span>
+                  </button>
+                )
+              ) : (
+                <button
+                  type="button"
+                  disabled
+                  title="Sign in to share"
+                  className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground/40 cursor-not-allowed"
+                >
+                  <Share2 className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline text-[11px]">Share</span>
+                </button>
+              )
             )}
 
             {/* BYOK keys */}
