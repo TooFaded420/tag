@@ -6,12 +6,16 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   Brain,
   Crown,
+  Download,
   Key,
   Lock,
   LogIn,
   Menu,
   MessageSquarePlus,
+  Pin,
+  PinOff,
   Send,
+  Settings2,
   Share2,
   Terminal,
   Trash2,
@@ -153,8 +157,11 @@ interface Thread {
   id: string;
   title: string;
   createdAt: number;
+  updatedAt?: number;
   messages: Message[];
   workspace_id?: string | null;
+  pinned?: boolean;
+  systemPrompt?: string;
 }
 
 function generateId(): string {
@@ -188,6 +195,34 @@ function relativeTime(ts: number): string {
   const days = Math.floor(hrs / 24);
   if (days < 7) return `${days}d ago`;
   return new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+type DateBucket = "Pinned" | "Today" | "Yesterday" | "Earlier this week" | "Earlier this month" | "Older";
+
+function getDateBucket(thread: Thread): DateBucket {
+  if (thread.pinned) return "Pinned";
+  const ts = thread.updatedAt ?? thread.createdAt;
+  const diff = Date.now() - ts;
+  const days = diff / 86_400_000;
+  if (days < 1) return "Today";
+  if (days < 2) return "Yesterday";
+  if (days < 7) return "Earlier this week";
+  if (days < 30) return "Earlier this month";
+  return "Older";
+}
+
+const BUCKET_ORDER: DateBucket[] = ["Pinned", "Today", "Yesterday", "Earlier this week", "Earlier this month", "Older"];
+
+function groupThreadsByBucket(threads: Thread[]): Array<{ bucket: DateBucket; threads: Thread[] }> {
+  const map = new Map<DateBucket, Thread[]>();
+  for (const t of threads) {
+    const b = getDateBucket(t);
+    if (!map.has(b)) map.set(b, []);
+    map.get(b)!.push(t);
+  }
+  return BUCKET_ORDER
+    .filter((b) => map.has(b))
+    .map((b) => ({ bucket: b, threads: map.get(b)! }));
 }
 
 // ---------------------------------------------------------------------------
@@ -329,9 +364,10 @@ interface ThreadRowProps {
   active: boolean;
   onSelect: () => void;
   onDelete: () => void;
+  onTogglePin: () => void;
 }
 
-function ThreadRow({ thread, active, onSelect, onDelete }: ThreadRowProps) {
+function ThreadRow({ thread, active, onSelect, onDelete, onTogglePin }: ThreadRowProps) {
   const firstMsg = thread.messages.find((m) => m.role === "user");
   const firstMsgText = firstMsg
     ? (firstMsg.parts?.find((p) => p.type === "text") as { type: "text"; text: string } | undefined)?.text
@@ -363,29 +399,37 @@ function ThreadRow({ thread, active, onSelect, onDelete }: ThreadRowProps) {
         )}
         <p
           className={cn(
-            "line-clamp-1 text-xs leading-snug pr-5",
+            "line-clamp-1 text-xs leading-snug pr-10",
             active ? "font-medium text-foreground" : "font-normal"
           )}
         >
+          {thread.pinned && <Pin className="inline h-2.5 w-2.5 mr-1 text-primary/70" />}
           {title}
         </p>
         <p className="mt-0.5 font-mono text-[10px] text-muted-foreground/50">
-          {relativeTime(thread.createdAt)}
+          {relativeTime(thread.updatedAt ?? thread.createdAt)}
         </p>
       </button>
 
-      {/* Delete button — only visible on hover */}
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete();
-        }}
-        aria-label="Delete conversation"
-        className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground/50 hover:text-destructive"
-      >
-        <Trash2 className="h-3 w-3" />
-      </button>
+      {/* Hover actions: pin + delete */}
+      <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onTogglePin(); }}
+          aria-label={thread.pinned ? "Unpin conversation" : "Pin conversation"}
+          className="rounded p-0.5 text-muted-foreground/50 hover:text-primary transition-colors"
+        >
+          {thread.pinned ? <PinOff className="h-3 w-3" /> : <Pin className="h-3 w-3" />}
+        </button>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          aria-label="Delete conversation"
+          className="rounded p-0.5 text-muted-foreground/50 hover:text-destructive transition-colors"
+        >
+          <Trash2 className="h-3 w-3" />
+        </button>
+      </div>
     </li>
   );
 }
@@ -423,6 +467,11 @@ export default function Chat() {
   const [showError, setShowError] = useState(false);
   const [shareStatus, setShareStatus] = useState<"idle" | "sharing" | "copied">("idle");
   const [shareToken, setShareToken] = useState<string | null>(null);
+  const [systemPromptOpen, setSystemPromptOpen] = useState(false);
+  const [systemPromptDraft, setSystemPromptDraft] = useState("");
+  // Usage display for signed-in users
+  const [todayMsgCount, setTodayMsgCount] = useState<number | null>(null);
+  const dailyMsgLimit = 50;
 
   // ── Workspace state ─────────────────────────────────────────────────────
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(() => {
@@ -462,6 +511,12 @@ export default function Chat() {
   useEffect(() => { byokKeysRef.current = byokKeys; }, [byokKeys]);
   useEffect(() => { pendingFileNoteRef.current = pendingFileNote; }, [pendingFileNote]);
   useEffect(() => { activeWorkspaceIdRef.current = activeWorkspaceId; }, [activeWorkspaceId]);
+
+  // Mirror active thread to ref so fetch wrapper closure can read systemPrompt
+  const activeThreadRef = useRef<Thread | null>(null);
+  useEffect(() => {
+    activeThreadRef.current = threads.find((t) => t.id === activeThreadId) ?? null;
+  }, [threads, activeThreadId]);
 
   // Persist active workspace to localStorage; clear ?ws= param after reading it
   useEffect(() => {
@@ -592,8 +647,29 @@ export default function Chat() {
     return () => clearTimeout(timer);
   }, [showProWelcome]);
 
-  // userId tracked for T5/T6 usage display
-  void userId;
+  // Usage display — query chat_usage for today's row, refresh every 30s + after send
+  useEffect(() => {
+    if (!userId) { setTodayMsgCount(null); return; }
+    let cancelled = false;
+    async function fetchUsage() {
+      const today = new Date().toISOString().slice(0, 10);
+      try {
+        // TODO: remove `as any` once Supabase types regenerated
+        const { data } = await (supabase as any)
+          .from("chat_usage")
+          .select("msg_count")
+          .eq("user_id", userId)
+          .eq("day", today)
+          .maybeSingle();
+        if (!cancelled) setTodayMsgCount(data?.msg_count ?? 0);
+      } catch {
+        if (!cancelled) setTodayMsgCount(0);
+      }
+    }
+    fetchUsage();
+    const interval = setInterval(fetchUsage, 30_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [userId]);
 
   // ── Resolve the active thread's initial messages ────────────────────────
   const initialMessages = useMemo<Message[]>(() => {
@@ -628,6 +704,7 @@ export default function Chat() {
       const liveByokKeys = byokKeysRef.current;
       const livePendingFileNote = pendingFileNoteRef.current;
       const liveWorkspaceId = activeWorkspaceIdRef.current;
+      const liveActiveThread = activeThreadRef.current;
       const reqBody = init?.body ? JSON.parse(init.body as string) : {};
       // Diagnostic — exposes whether the send is even firing and with what
       // identity. If signed-in chats stop working again, the user can paste
@@ -664,6 +741,17 @@ export default function Chat() {
       const latestUserContent = latestUserMsg?.content ?? "";
 
       let finalMessages = messages;
+
+      // ── Per-thread system prompt injection ────────────────────────────────
+      if (liveActiveThread?.systemPrompt?.trim()) {
+        const alreadyHasThreadSP = finalMessages.some(
+          (m) => m.role === "system" && m.content === liveActiveThread.systemPrompt!.trim()
+        );
+        if (!alreadyHasThreadSP) {
+          finalMessages = [{ role: "system", content: liveActiveThread.systemPrompt.trim() }, ...finalMessages];
+        }
+      }
+
       if (livePendingFileNote) {
         const fileNoteMsg = {
           role: "system",
@@ -981,7 +1069,7 @@ export default function Chat() {
     setThreads((prev) => {
       if (!activeThreadId) return prev;
       const updated = prev.map((t) =>
-        t.id === activeThreadId ? { ...t, messages: chat.messages } : t
+        t.id === activeThreadId ? { ...t, messages: chat.messages, updatedAt: Date.now() } : t
       );
       saveThreads(updated);
       return updated;
@@ -1017,6 +1105,47 @@ export default function Chat() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chat.messages]);
+
+  // ── Global keyboard shortcuts ────────────────────────────────────────────
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      // Cmd/Ctrl+K — focus composer
+      if (e.key === "k" && !e.shiftKey) {
+        e.preventDefault();
+        textareaRef.current?.focus();
+        return;
+      }
+      // Cmd/Ctrl+Shift+O — new thread
+      if (e.key === "o" && e.shiftKey) {
+        e.preventDefault();
+        createNewThread();
+        return;
+      }
+      // Cmd/Ctrl+/ — open BYOK drawer
+      if (e.key === "/") {
+        e.preventDefault();
+        setByokOpen(true);
+        return;
+      }
+    }
+    function onKeyUp(e: KeyboardEvent) {
+      // Esc — close any open drawer/panel
+      if (e.key === "Escape") {
+        setByokOpen(false);
+        setAccountDrawerOpen(false);
+        setMemoryDrawerOpen(false);
+        setSystemPromptOpen(false);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, [createNewThread]);
 
   // ── Thread helpers ───────────────────────────────────────────────────────
   const createNewThread = useCallback(() => {
@@ -1071,6 +1200,59 @@ export default function Chat() {
     },
     [activeThreadId, createNewThread]
   );
+
+  const togglePinThread = useCallback((threadId: string) => {
+    setThreads((prev) => {
+      const updated = prev.map((t) =>
+        t.id === threadId ? { ...t, pinned: !t.pinned } : t
+      );
+      saveThreads(updated);
+      return updated;
+    });
+  }, []);
+
+  const saveSystemPrompt = useCallback((threadId: string, prompt: string) => {
+    setThreads((prev) => {
+      const updated = prev.map((t) =>
+        t.id === threadId ? { ...t, systemPrompt: prompt } : t
+      );
+      saveThreads(updated);
+      return updated;
+    });
+  }, []);
+
+  function handleExportThread() {
+    const thread = threads.find((t) => t.id === activeThreadId);
+    if (!thread) return;
+    const modelName = MODELS.find((m) => m.id === model)?.name ?? model;
+    const title = thread.title || "Untitled conversation";
+    const date = new Date().toISOString().slice(0, 10);
+    const lines: string[] = [
+      `# ${title}`,
+      ``,
+      `*Exported from Tag — hecz.dev/chat — ${date}*`,
+      ``,
+    ];
+    for (const msg of thread.messages) {
+      if (msg.role === "system") continue;
+      const content = msg.parts
+        ? msg.parts.filter((p) => p.type === "text").map((p) => ("text" in p ? p.text : "")).join("")
+        : (msg as unknown as { content?: string }).content ?? "";
+      if (!content) continue;
+      lines.push(msg.role === "user" ? `## You` : `## Tag (${modelName})`);
+      lines.push(``);
+      lines.push(content);
+      lines.push(``);
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const slug = title.replace(/[^a-z0-9-]+/gi, "-").slice(0, 40).replace(/-+$/, "") || `tag-thread-${thread.id.slice(0, 8)}`;
+    a.href = url;
+    a.download = `${slug}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   // ── Upgrade ──────────────────────────────────────────────────────────────
   async function handleUpgrade() {
@@ -1259,27 +1441,40 @@ export default function Chat() {
               </span>
             </div>
 
-            {/* Thread list — filtered to active workspace (null = personal) */}
+            {/* Thread list — filtered to active workspace, grouped by date bucket */}
             <nav className="flex-1 overflow-y-auto px-1.5 pb-4">
               {(() => {
-                const visibleThreads = threads.filter(
-                  (t) => (t.workspace_id ?? null) === activeWorkspaceId
-                );
-                return visibleThreads.length === 0 ? (
-                  <p className="px-2 py-3 text-xs text-muted-foreground/50">No conversations yet.</p>
-                ) : (
-                  <ul>
-                    {visibleThreads.map((thread) => (
-                      <ThreadRow
-                        key={thread.id}
-                        thread={thread}
-                        active={thread.id === activeThreadId}
-                        onSelect={() => selectThread(thread)}
-                        onDelete={() => deleteThread(thread.id)}
-                      />
-                    ))}
-                  </ul>
-                );
+                const visibleThreads = threads
+                  .filter((t) => (t.workspace_id ?? null) === activeWorkspaceId)
+                  .sort((a, b) => {
+                    // Pinned first, then by updatedAt desc within each group
+                    if (a.pinned && !b.pinned) return -1;
+                    if (!a.pinned && b.pinned) return 1;
+                    return (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt);
+                  });
+                if (visibleThreads.length === 0) {
+                  return <p className="px-2 py-3 text-xs text-muted-foreground/50">No conversations yet.</p>;
+                }
+                const groups = groupThreadsByBucket(visibleThreads);
+                return groups.map(({ bucket, threads: bucketThreads }) => (
+                  <div key={bucket}>
+                    <p className="mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/50 px-2 pt-3 pb-1">
+                      {bucket}
+                    </p>
+                    <ul>
+                      {bucketThreads.map((thread) => (
+                        <ThreadRow
+                          key={thread.id}
+                          thread={thread}
+                          active={thread.id === activeThreadId}
+                          onSelect={() => selectThread(thread)}
+                          onDelete={() => deleteThread(thread.id)}
+                          onTogglePin={() => togglePinThread(thread.id)}
+                        />
+                      ))}
+                    </ul>
+                  </div>
+                ));
               })()}
             </nav>
 
@@ -1469,6 +1664,41 @@ export default function Chat() {
                   <span className="hidden sm:inline text-[11px]">Share</span>
                 </button>
               )
+            )}
+
+            {/* Export button — chat mode + has messages */}
+            {view === "chat" && chat.messages.length > 0 && (
+              <button
+                type="button"
+                onClick={handleExportThread}
+                title="Export conversation as Markdown"
+                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              >
+                <Download className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline text-[11px]">Export</span>
+              </button>
+            )}
+
+            {/* System prompt button — chat mode only */}
+            {view === "chat" && (
+              <button
+                type="button"
+                onClick={() => {
+                  const t = threads.find((t) => t.id === activeThreadId);
+                  setSystemPromptDraft(t?.systemPrompt ?? "");
+                  setSystemPromptOpen((o) => !o);
+                }}
+                title="Per-thread system prompt"
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors",
+                  threads.find((t) => t.id === activeThreadId)?.systemPrompt?.trim()
+                    ? "text-primary bg-primary/10 hover:bg-primary/15"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                <Settings2 className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline text-[11px]">System</span>
+              </button>
             )}
 
             {/* BYOK keys */}
@@ -1845,8 +2075,53 @@ export default function Chat() {
                     anti-abuse. Login CTA in sidebar handles the upgrade
                     funnel. */}
 
+                {/* System prompt panel — slides open above the composer */}
+                {systemPromptOpen && (
+                  <div className="shrink-0 border-t border-border bg-card px-4 pt-3 pb-0">
+                    <div className="mx-auto max-w-2xl">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/70">
+                          System prompt for this thread
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setSystemPromptOpen(false)}
+                          aria-label="Close system prompt editor"
+                          className="rounded p-0.5 text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      <textarea
+                        className="w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 transition-colors leading-relaxed"
+                        placeholder="You are a helpful assistant specialized in…"
+                        rows={3}
+                        value={systemPromptDraft}
+                        onChange={(e) => setSystemPromptDraft(e.target.value)}
+                        onBlur={() => {
+                          if (activeThreadId) saveSystemPrompt(activeThreadId, systemPromptDraft);
+                        }}
+                      />
+                      <p className="mt-1 mb-2 text-[10px] text-muted-foreground/50">
+                        Injected at the top of every send in this thread. Saved automatically.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
                 {/* Sticky composer */}
                 <div className="shrink-0 border-t border-border bg-card px-4 py-3">
+                  {/* Usage indicator — signed-in users only */}
+                  {userId && todayMsgCount !== null && (
+                    <div className="mx-auto max-w-2xl mb-2 flex items-center gap-1.5">
+                      <span className="font-mono text-[10px] text-muted-foreground/60">
+                        {todayMsgCount}/{dailyMsgLimit} messages today
+                      </span>
+                      {todayMsgCount >= dailyMsgLimit && (
+                        <span className="text-[10px] text-destructive/70">· limit reached</span>
+                      )}
+                    </div>
+                  )}
                   <form
                     onSubmit={(e) => {
                       e.preventDefault();
