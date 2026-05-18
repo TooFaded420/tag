@@ -9,12 +9,13 @@
  * handles dispatch to the sandboxed VM (Python/Node/bash exec + file I/O).
  */
 
-import { useEffect, useRef, useState, lazy, Suspense, useCallback } from "react";
+import { useEffect, useRef, useState, lazy, Suspense, useCallback, type ReactNode } from "react";
 import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Crown,
+  Globe,
   Loader2,
   Send,
   Terminal,
@@ -35,7 +36,9 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
 const AGENT_SYSTEM_PROMPT =
   "You have access to a Linux sandbox at /workspace. " +
   "You can write and execute Python, Node.js, and bash commands, and read/write files. " +
-  "No internet access. Max 200 tool calls per day. " +
+  "You can also browse URLs with browser_navigate — it returns the visible page text (up to 8000 chars). " +
+  "No internet access in the sandbox itself, but browser_navigate fetches live URLs via a headless browser. " +
+  "Max 200 tool calls per day. " +
   "Be efficient: prefer writing a file then executing it over multi-step shell chains. " +
   "When a task is complete, give a concise plain-text reply with the result or a summary.";
 
@@ -131,6 +134,24 @@ const AGENT_TOOLS = [
           dir: { type: "string" },
         },
         required: ["dir"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_navigate",
+      description:
+        "Navigate a headless browser to a URL and return the visible page text (up to 8000 chars). Use for fetching live web content, documentation, or any public URL.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            description: "Absolute URL to navigate to (must start with http:// or https://)",
+          },
+        },
+        required: ["url"],
       },
     },
   },
@@ -319,7 +340,12 @@ async function callModel(
 // ToolCallCard — single tool invocation block
 // ---------------------------------------------------------------------------
 
-function argsSummary(args: Record<string, unknown>): string {
+function argsSummary(args: Record<string, unknown>, tool?: string): string {
+  // For browser_navigate, show the URL directly
+  if (tool === "browser_navigate" && typeof args.url === "string") {
+    const url = args.url;
+    return url.length > 60 ? url.slice(0, 60) + "…" : url;
+  }
   const entries = Object.entries(args);
   if (entries.length === 0) return "{}";
   // Show the first string value truncated — usually the code/cmd/path
@@ -329,6 +355,20 @@ function argsSummary(args: Record<string, unknown>): string {
     return truncated.replace(/\n/g, " ↵ ");
   }
   return JSON.stringify(args).slice(0, 60) + "…";
+}
+
+/** Returns tool-specific icon + human label for the card header */
+function toolMeta(tool: string): { icon: ReactNode; label: string } {
+  if (tool === "browser_navigate") {
+    return {
+      icon: <Globe className="h-3 w-3 text-blue-500" aria-hidden />,
+      label: "browse",
+    };
+  }
+  return {
+    icon: <Terminal className="h-3 w-3 text-muted-foreground" aria-hidden />,
+    label: tool,
+  };
 }
 
 function ToolCallCard({ block, onToggle }: { block: ToolCallBlock; onToggle: () => void }) {
@@ -370,20 +410,25 @@ function ToolCallCard({ block, onToggle }: { block: ToolCallBlock; onToggle: () 
           )}
         </span>
 
-        {/* Tool name */}
+        {/* Tool icon + name */}
+        {toolMeta(block.tool).icon}
         <span
           className={cn(
             "font-semibold",
             block.status === "error" ? "text-destructive" : "text-foreground"
           )}
         >
-          {block.tool}
+          {toolMeta(block.tool).label}
         </span>
 
         {/* Args summary (collapsed) */}
         {!isExpanded && (
           <span className="flex-1 truncate text-muted-foreground">
-            ({argsSummary(block.args)})
+            {block.tool === "browser_navigate" && typeof block.args.url === "string" ? (
+              <code className="text-[11px] text-blue-500/80">{argsSummary(block.args, block.tool)}</code>
+            ) : (
+              <>({argsSummary(block.args, block.tool)})</>
+            )}
           </span>
         )}
 
@@ -437,13 +482,21 @@ function ToolCallCard({ block, onToggle }: { block: ToolCallBlock; onToggle: () 
           {block.status === "done" && block.result !== undefined && (
             <div>
               <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1">
-                output
+                {block.tool === "browser_navigate" ? "page text" : "output"}
               </p>
-              <pre className="whitespace-pre-wrap break-all text-[11px] text-foreground/80 leading-relaxed max-h-48 overflow-y-auto">
-                {block.result.length > 2000
-                  ? block.result.slice(0, 2000) + "\n… (truncated)"
-                  : block.result}
-              </pre>
+              {block.tool === "browser_navigate" ? (
+                <pre className="whitespace-pre-wrap break-all text-[11px] text-muted-foreground leading-relaxed max-h-48 overflow-y-auto">
+                  {block.result.length > 300
+                    ? block.result.slice(0, 300) + "\n… (truncated)"
+                    : block.result}
+                </pre>
+              ) : (
+                <pre className="whitespace-pre-wrap break-all text-[11px] text-foreground/80 leading-relaxed max-h-48 overflow-y-auto">
+                  {block.result.length > 2000
+                    ? block.result.slice(0, 2000) + "\n… (truncated)"
+                    : block.result}
+                </pre>
+              )}
             </div>
           )}
 
