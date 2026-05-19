@@ -1,9 +1,7 @@
 import { useEffect, useState } from "react";
 import { Key, X, Eye, EyeOff, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { readComposioKey } from "@/components/chat/IntegrationsPanel";
-
-const COMPOSIO_KEY_STORAGE = "tag_composio_key";
+import { readComposioKey, COMPOSIO_KEY_STORAGE } from "@/components/chat/IntegrationsPanel";
 
 export type Provider = "openrouter" | "anthropic" | "openai" | "google" | "synthetic" | "ollama";
 

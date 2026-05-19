@@ -26,7 +26,34 @@ import { cn } from "@/lib/utils";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
 const INTEGRATIONS_URL = `${SUPABASE_URL}/functions/v1/tag-integrations`;
-const COMPOSIO_KEY_STORAGE = "tag_composio_key";
+export const COMPOSIO_KEY_STORAGE = "tag_composio_key";
+
+// Allowlist of trusted OAuth redirect hostname suffixes (mirrors server-side list).
+// Validated client-side before opening popup so a compromised Composio response
+// cannot redirect users to untrusted domains even if the server check is bypassed.
+const ALLOWED_REDIRECT_HOSTS = [
+  "app.composio.dev",
+  "backend.composio.dev",
+  "auth.composio.dev",
+  "accounts.google.com",
+  "slack.com",
+  "github.com",
+  "linear.app",
+  "www.notion.so",
+  "notion.so",
+];
+
+function isAllowedRedirectUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") return false;
+    return ALLOWED_REDIRECT_HOSTS.some(
+      (allowed) => parsed.hostname === allowed || parsed.hostname.endsWith(`.${allowed}`),
+    );
+  } catch {
+    return false;
+  }
+}
 
 // Poll interval for OAuth completion check
 const POLL_INTERVAL_MS = 2_000;
@@ -139,18 +166,29 @@ export function IntegrationsPanel({ jwt }: IntegrationsPanelProps) {
 
   const handleSaveKey = useCallback(() => {
     const trimmed = keyDraft.trim();
+    const hadPreviousKey = composioKey.length > 0;
     writeComposioKey(trimmed);
     setComposioKey(trimmed);
     setKeyDraft("");
     setSavingKey(false);
-  }, [keyDraft]);
+    // If user had a previous key and is changing it, purge stale DB rows so
+    // old connected account IDs don't ghost-fail against the new key.
+    if (hadPreviousKey && jwt && trimmed) {
+      void apiCall(jwt, trimmed, { action: "disconnect_all" }).catch(() => {});
+    }
+    setIntegrations([]);
+  }, [keyDraft, composioKey, jwt]);
 
   const handleClearKey = useCallback(() => {
+    // Purge stale DB rows before clearing — best effort, ignore errors.
+    if (jwt && composioKey) {
+      void apiCall(jwt, composioKey, { action: "disconnect_all" }).catch(() => {});
+    }
     writeComposioKey("");
     setComposioKey("");
     setKeyDraft("");
     setIntegrations([]);
-  }, []);
+  }, [jwt, composioKey]);
 
   // ── Load integrations ──────────────────────────────────────────────────────
 
@@ -208,6 +246,14 @@ export function IntegrationsPanel({ jwt }: IntegrationsPanelProps) {
           connectedAccountId: string;
         };
 
+        // Validate redirectUrl before opening popup — prevents open redirect if
+        // Composio response is compromised or misconfigured.
+        if (!isAllowedRedirectUrl(data.redirectUrl)) {
+          setError("Untrusted redirect URL from Composio");
+          setConnecting(null);
+          return;
+        }
+
         // Open OAuth popup
         window.open(
           data.redirectUrl,
@@ -238,12 +284,13 @@ export function IntegrationsPanel({ jwt }: IntegrationsPanelProps) {
           }
         }, POLL_INTERVAL_MS);
 
-        // Timeout after 5 minutes
+        // Timeout after 5 minutes — Math.max guards against negative delay if
+        // the connect round-trip itself took longer than POLL_TIMEOUT_MS.
         pollTimeoutRef.current = setTimeout(() => {
           stopPolling();
           setConnecting(null);
           setError("OAuth flow timed out. Please try again.");
-        }, POLL_TIMEOUT_MS - (Date.now() - startedAt));
+        }, Math.max(0, POLL_TIMEOUT_MS - (Date.now() - startedAt)));
       } catch (err) {
         const e = err as Error & { body?: { error?: string; message?: string } };
         const msg =
