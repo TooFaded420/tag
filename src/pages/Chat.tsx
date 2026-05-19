@@ -26,6 +26,7 @@ import {
   Thermometer,
   Trash2,
   X,
+  SearchCode,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ModelPicker, MODELS } from "@/components/chat/ModelPicker";
@@ -158,6 +159,32 @@ const TAG_ACTIVE_WORKSPACE_KEY = "tag_active_workspace_v1";
 const TEMPERATURE_KEY = "tag_temperature_v1";
 const MODEL_PRESETS_KEY = "tag_model_presets_v1";
 
+// Cost tracking: input $/1M tokens, output $/1M tokens (0 = free/synthetic)
+const MODEL_COSTS: Record<string, { in: number; out: number }> = {
+  "claude-sonnet-4":           { in: 3,    out: 15  },
+  "claude-sonnet-4-5":         { in: 3,    out: 15  },
+  "hf:openai/gpt-oss-120b":    { in: 0,    out: 0   },
+  "hf:deepseek/deepseek-v3.1": { in: 0,    out: 0   },
+  "hf:moonshotai/Kimi-K2.6":   { in: 0.95, out: 4.0 },
+  "hf:zai-org/GLM-5.1":        { in: 1.0,  out: 3.0 },
+  "hf:MiniMaxAI/MiniMax-M2.5": { in: 0.4,  out: 2.0 },
+  "hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4": { in: 0.3, out: 1.0 },
+};
+
+function estimateCost(content: string, modelId: string): number {
+  const rates = MODEL_COSTS[modelId];
+  if (!rates || (rates.in === 0 && rates.out === 0)) return 0;
+  // Rough token estimate: chars / 4. Treat whole response as output tokens.
+  const tokens = content.length / 4;
+  return (tokens / 1_000_000) * rates.out;
+}
+
+function formatCost(cost: number): string {
+  if (cost <= 0) return "";
+  if (cost < 0.0001) return "<$0.0001";
+  return `$${cost.toFixed(4)}`;
+}
+
 // ---------------------------------------------------------------------------
 // Model preset types + helpers
 // ---------------------------------------------------------------------------
@@ -226,6 +253,7 @@ interface Thread {
   workspace_id?: string | null;
   pinned?: boolean;
   systemPrompt?: string;
+  messageCosts?: Record<string, number>;
 }
 
 function generateId(): string {
@@ -471,9 +499,15 @@ interface ThreadRowProps {
   onSelect: () => void;
   onDelete: () => void;
   onTogglePin: () => void;
+  // drag-to-reorder (pinned section only)
+  draggable?: boolean;
+  onDragStart?: (e: React.DragEvent) => void;
+  onDragOver?: (e: React.DragEvent) => void;
+  onDrop?: (e: React.DragEvent) => void;
+  isDragOver?: boolean;
 }
 
-function ThreadRow({ thread, active, onSelect, onDelete, onTogglePin }: ThreadRowProps) {
+function ThreadRow({ thread, active, onSelect, onDelete, onTogglePin, draggable: isDraggable, onDragStart, onDragOver, onDrop, isDragOver }: ThreadRowProps) {
   const firstMsg = thread.messages.find((m) => m.role === "user");
   const firstMsgText = firstMsg
     ? (firstMsg.parts?.find((p) => p.type === "text") as { type: "text"; text: string } | undefined)?.text
@@ -487,7 +521,13 @@ function ThreadRow({ thread, active, onSelect, onDelete, onTogglePin }: ThreadRo
       : "New conversation");
 
   return (
-    <li className="group relative">
+    <li
+      className={cn("group relative", isDragOver && "border-t-2 border-primary")}
+      draggable={isDraggable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
       <button
         type="button"
         onClick={onSelect}
@@ -496,7 +536,9 @@ function ThreadRow({ thread, active, onSelect, onDelete, onTogglePin }: ThreadRo
           "border-b border-border/40 last:border-b-0",
           active
             ? "bg-primary/8 text-foreground"
-            : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+            : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
+          isDraggable && "cursor-grab active:cursor-grabbing",
+          isDragOver && "opacity-60"
         )}
       >
         {/* Active indicator stripe */}
@@ -652,6 +694,39 @@ export default function Chat() {
   });
   const [threadSearch, setThreadSearch] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Global cross-thread search ───────────────────────────────────────────
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const [globalSearchQuery, setGlobalSearchQuery] = useState("");
+  const [globalSearchDebounced, setGlobalSearchDebounced] = useState("");
+  const globalSearchInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const t = setTimeout(() => setGlobalSearchDebounced(globalSearchQuery), 200);
+    return () => clearTimeout(t);
+  }, [globalSearchQuery]);
+  useEffect(() => {
+    if (globalSearchOpen) setTimeout(() => globalSearchInputRef.current?.focus(), 50);
+    else { setGlobalSearchQuery(""); setGlobalSearchDebounced(""); }
+  }, [globalSearchOpen]);
+
+  // ── Message cost tracking — keyed by message id ──────────────────────────
+  const [messageCosts, setMessageCosts] = useState<Record<string, number>>(() => {
+    // Rehydrate persisted costs from active thread on mount
+    try {
+      const raw = localStorage.getItem(THREAD_STORAGE_KEY);
+      if (!raw) return {};
+      const threads = JSON.parse(raw) as Thread[];
+      const map: Record<string, number> = {};
+      for (const t of threads) {
+        if (t.messageCosts) Object.assign(map, t.messageCosts);
+      }
+      return map;
+    } catch { return {}; }
+  });
+
+  // ── Drag-to-reorder pinned threads ───────────────────────────────────────
+  const dragThreadIdRef = useRef<string | null>(null);
+  const [dragOverThreadId, setDragOverThreadId] = useState<string | null>(null);
 
   // Mirror active thread to ref so fetch wrapper closure can read systemPrompt
   const activeThreadRef = useRef<Thread | null>(null);
@@ -1397,12 +1472,32 @@ export default function Chat() {
     setThreads((prev) => {
       if (!activeThreadId) return prev;
       const updated = prev.map((t) =>
-        t.id === activeThreadId ? { ...t, messages: chat.messages, updatedAt: Date.now() } : t
+        t.id === activeThreadId ? { ...t, messages: chat.messages, updatedAt: Date.now(), messageCosts: messageCosts } : t
       );
       saveThreads(updated);
       return updated;
     });
-  }, [chat.messages, activeThreadId]);
+  }, [chat.messages, activeThreadId, messageCosts]);
+
+  // ── Compute cost when streaming finishes ─────────────────────────────────
+  const prevStatusRef = useRef(chat.status);
+  useEffect(() => {
+    const wasStreaming = prevStatusRef.current === "streaming" || prevStatusRef.current === "submitted";
+    prevStatusRef.current = chat.status;
+    if (!wasStreaming || (chat.status !== "ready" && chat.status !== "error")) return;
+    // Find the last assistant message and compute its cost
+    const lastAssistant = [...chat.messages].reverse().find((m) => m.role === "assistant");
+    if (!lastAssistant) return;
+    if (messageCosts[lastAssistant.id] !== undefined) return; // already computed
+    const content = lastAssistant.parts
+      ? lastAssistant.parts.filter((p) => p.type === "text").map((p) => ("text" in p ? p.text : "")).join("")
+      : (lastAssistant as unknown as { content?: string }).content ?? "";
+    const cost = estimateCost(content, modelRef.current);
+    if (cost > 0) {
+      setMessageCosts((prev) => ({ ...prev, [lastAssistant.id]: cost }));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chat.status]);
 
   // ── Auto-title: generate title from first user message after streaming ends ──
   const autoTitledThreadsRef = useRef<Set<string>>(new Set());
@@ -1507,11 +1602,18 @@ export default function Chat() {
         setSystemPromptOpen(false);
         setThreadSearch("");
         setSlashOpen(false);
+        setGlobalSearchOpen(false);
         return;
       }
 
       if (!mod) return;
 
+      // Cmd/Ctrl+Shift+F — open global cross-thread search
+      if (e.key === "f" && e.shiftKey) {
+        e.preventDefault();
+        setGlobalSearchOpen(true);
+        return;
+      }
       // Cmd/Ctrl+F — focus sidebar thread search (override browser find)
       if (e.key === "f" && !e.shiftKey) {
         e.preventDefault();
@@ -1586,6 +1688,23 @@ export default function Chat() {
       const updated = prev.map((t) =>
         t.id === threadId ? { ...t, pinned: !t.pinned } : t
       );
+      saveThreads(updated);
+      return updated;
+    });
+  }, []);
+
+  const handlePinnedDrop = useCallback((draggedId: string, targetId: string) => {
+    if (draggedId === targetId) return;
+    setThreads((prev) => {
+      const pinned = prev.filter((t) => t.pinned);
+      const unpinned = prev.filter((t) => !t.pinned);
+      const dragIdx = pinned.findIndex((t) => t.id === draggedId);
+      const targetIdx = pinned.findIndex((t) => t.id === targetId);
+      if (dragIdx < 0 || targetIdx < 0) return prev;
+      const reordered = [...pinned];
+      const [dragged] = reordered.splice(dragIdx, 1);
+      reordered.splice(targetIdx, 0, dragged);
+      const updated = [...reordered, ...unpinned];
       saveThreads(updated);
       return updated;
     });
@@ -2017,6 +2136,23 @@ export default function Chat() {
                           onSelect={() => selectThread(thread)}
                           onDelete={() => deleteThread(thread.id)}
                           onTogglePin={() => togglePinThread(thread.id)}
+                          draggable={bucket === "Pinned"}
+                          isDragOver={bucket === "Pinned" && dragOverThreadId === thread.id}
+                          onDragStart={bucket === "Pinned" ? (e) => {
+                            dragThreadIdRef.current = thread.id;
+                            e.dataTransfer.effectAllowed = "move";
+                          } : undefined}
+                          onDragOver={bucket === "Pinned" ? (e) => {
+                            e.preventDefault();
+                            setDragOverThreadId(thread.id);
+                          } : undefined}
+                          onDrop={bucket === "Pinned" ? (e) => {
+                            e.preventDefault();
+                            const dragged = dragThreadIdRef.current;
+                            dragThreadIdRef.current = null;
+                            setDragOverThreadId(null);
+                            if (dragged) handlePinnedDrop(dragged, thread.id);
+                          } : undefined}
                         />
                       ))}
                     </ul>
@@ -2307,6 +2443,20 @@ export default function Chat() {
               </button>
             )}
 
+            {/* Global search */}
+            {view === "chat" && (
+              <button
+                type="button"
+                onClick={() => setGlobalSearchOpen(true)}
+                title="Search all conversations (⌘⇧F)"
+                aria-label="Search all conversations"
+                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              >
+                <SearchCode className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline text-[11px]">Search</span>
+              </button>
+            )}
+
             {/* BYOK keys */}
             <button
               type="button"
@@ -2507,7 +2657,7 @@ export default function Chat() {
                             }
 
                             return (
-                              <div key={msg.id} className="flex items-start gap-2.5">
+                              <div key={msg.id} data-message-id={msg.id} className="flex items-start gap-2.5">
                                 <div className="h-7 w-7 shrink-0 rounded-full bg-muted border border-border/60 flex items-center justify-center overflow-hidden mt-0.5">
                                   <picture>
                                     <source srcSet="/logos/tag-graffiti.webp" type="image/webp" />
@@ -2546,6 +2696,11 @@ export default function Chat() {
                                       >
                                         <GitFork className="h-3 w-3" />
                                       </button>
+                                      {messageCosts[msg.id] != null && messageCosts[msg.id] > 0 && (
+                                        <span className="font-mono text-[10px] text-muted-foreground/40 ml-1" title="Estimated cost (output tokens)">
+                                          {formatCost(messageCosts[msg.id])}
+                                        </span>
+                                      )}
                                     </div>
                                   )}
                                 </div>
@@ -2961,6 +3116,103 @@ export default function Chat() {
         tier={tier}
         onUpgrade={() => { setAccountDrawerOpen(false); handleUpgrade(); }}
       />
+
+      {/* Global cross-thread search modal */}
+      {globalSearchOpen && (() => {
+        const q = globalSearchDebounced.trim().toLowerCase();
+        type SearchResult = { threadId: string; threadTitle: string; messageId: string; snippet: string; matchStart: number };
+        const results: SearchResult[] = [];
+        if (q.length >= 2) {
+          for (const thread of threads) {
+            for (const msg of thread.messages) {
+              if (msg.role === "system") continue;
+              const body = msg.parts
+                ? msg.parts.filter((p) => p.type === "text").map((p) => ("text" in p ? p.text : "")).join("")
+                : (msg as unknown as { content?: string }).content ?? "";
+              const idx = body.toLowerCase().indexOf(q);
+              if (idx < 0) continue;
+              const start = Math.max(0, idx - 30);
+              const end = Math.min(body.length, idx + q.length + 30);
+              const snippet = (start > 0 ? "…" : "") + body.slice(start, end) + (end < body.length ? "…" : "");
+              results.push({ threadId: thread.id, threadTitle: thread.title || "Untitled", messageId: msg.id, snippet, matchStart: idx - start + (start > 0 ? 1 : 0) });
+              if (results.length >= 40) break;
+            }
+            if (results.length >= 40) break;
+          }
+        }
+        return (
+          <>
+            <div className="fixed inset-0 z-50 bg-foreground/30 backdrop-blur-[2px]" onClick={() => setGlobalSearchOpen(false)} aria-hidden />
+            <div role="dialog" aria-modal="true" aria-label="Search all conversations" className="fixed inset-0 z-50 flex items-start justify-center pt-20 px-4">
+              <div className="w-full max-w-lg rounded-xl border border-border bg-card shadow-xl overflow-hidden">
+                <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
+                  <SearchCode className="h-4 w-4 text-muted-foreground/60 shrink-0" />
+                  <input
+                    ref={globalSearchInputRef}
+                    type="text"
+                    value={globalSearchQuery}
+                    onChange={(e) => setGlobalSearchQuery(e.target.value)}
+                    placeholder="Search all conversations…"
+                    className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none"
+                  />
+                  <kbd className="hidden sm:inline font-mono text-[10px] text-muted-foreground/40 border border-border rounded px-1">Esc</kbd>
+                  <button type="button" onClick={() => setGlobalSearchOpen(false)} className="rounded p-0.5 text-muted-foreground/50 hover:text-foreground transition-colors ml-1">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div className="max-h-80 overflow-y-auto">
+                  {q.length < 2 ? (
+                    <p className="px-4 py-6 text-center text-xs text-muted-foreground/50">Type at least 2 characters to search</p>
+                  ) : results.length === 0 ? (
+                    <p className="px-4 py-6 text-center text-xs text-muted-foreground/50">No matches found</p>
+                  ) : (
+                    <ul>
+                      {results.map((r, i) => {
+                        const before = r.snippet.slice(0, r.matchStart);
+                        const match = r.snippet.slice(r.matchStart, r.matchStart + q.length);
+                        const after = r.snippet.slice(r.matchStart + q.length);
+                        return (
+                          <li key={`${r.threadId}-${r.messageId}-${i}`} className={cn("border-b border-border/40 last:border-b-0")}>
+                            <button
+                              type="button"
+                              className="w-full text-left px-4 py-3 hover:bg-muted/60 transition-colors"
+                              onClick={() => {
+                                const thread = threads.find((t) => t.id === r.threadId);
+                                if (thread) {
+                                  selectThread(thread);
+                                  setGlobalSearchOpen(false);
+                                  // scroll to message after brief delay for render
+                                  setTimeout(() => {
+                                    const el = document.querySelector(`[data-message-id="${r.messageId}"]`);
+                                    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                                  }, 150);
+                                }
+                              }}
+                            >
+                              <p className="text-[11px] font-medium text-primary/80 truncate mb-0.5">{r.threadTitle}</p>
+                              <p className="text-xs text-muted-foreground leading-relaxed">
+                                {before}
+                                <mark className="bg-primary/20 text-foreground rounded-[2px] px-px">{match}</mark>
+                                {after}
+                              </p>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+                <div className="px-4 py-2 border-t border-border/40 flex items-center justify-between">
+                  <span className="font-mono text-[10px] text-muted-foreground/40">
+                    {q.length >= 2 ? `${results.length} result${results.length !== 1 ? "s" : ""}` : ""}
+                  </span>
+                  <kbd className="font-mono text-[10px] text-muted-foreground/40">⌘⇧F</kbd>
+                </div>
+              </div>
+            </div>
+          </>
+        );
+      })()}
 
       {/* Pro welcome modal — shown once after checkout return */}
       {showProWelcome && (
