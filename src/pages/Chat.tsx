@@ -1525,6 +1525,7 @@ export default function Chat() {
             temperature: liveTemperature,
             byok_provider: activeBYOKProvider,
             ...(liveComposioKey ? { byok_composio_key: liveComposioKey } : {}),
+            ...(liveWorkspaceId ? { workspace_id: liveWorkspaceId } : {}),
           }),
         });
       } else {
@@ -1536,6 +1537,7 @@ export default function Chat() {
             model: liveModel,
             temperature: liveTemperature,
             ...(liveComposioKey ? { byok_composio_key: liveComposioKey } : {}),
+            ...(liveWorkspaceId ? { workspace_id: liveWorkspaceId } : {}),
           }),
         });
       }
@@ -1555,7 +1557,7 @@ export default function Chat() {
             response = await fetch(input as RequestInfo, {
               ...init,
               headers: retryHeaders,
-              body: JSON.stringify({ ...reqBody, messages: finalMessages, model: liveModel, temperature: liveTemperature }),
+              body: JSON.stringify({ ...reqBody, messages: finalMessages, model: liveModel, temperature: liveTemperature, ...(liveWorkspaceId ? { workspace_id: liveWorkspaceId } : {}) }),
             });
           }
         } catch {
@@ -3377,7 +3379,6 @@ export default function Chat() {
             )}
 
             {/* Workspace switcher pill — left of NotificationCenter */}
-            {/* TODO: filter threads/memories by activeWorkspaceId in subsequent wave */}
             {view === "chat" && (
               <WorkspaceSwitcher
                 jwt={jwt}
@@ -4009,6 +4010,16 @@ export default function Chat() {
                       <circle cx="44" cy="10" r="1.5" fill="#5EEAD4" opacity="0.35" />
                     </svg>
                   </div>
+
+                  {/* Workspace mode pill */}
+                  {activeWorkspaceId && (
+                    <div className="relative z-10 flex justify-center pt-3 pb-0 pointer-events-none">
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/5 px-3 py-1 text-[11px] text-primary/70 font-medium select-none">
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden><circle cx="5" cy="5" r="4" stroke="currentColor" strokeWidth="1.5"/></svg>
+                        workspace mode
+                      </span>
+                    </div>
+                  )}
 
                   {/* Messages — above all decorations */}
                   <div className="relative z-10">
