@@ -346,6 +346,7 @@ interface Thread {
   pinnedMessageIds?: string[];
   tags?: string[];
   preSummaryMessages?: Message[];
+  preSummaryMeta?: { messageCount: number; hadImages: boolean; hadCode: boolean };
 }
 
 function generateId(): string {
@@ -363,7 +364,18 @@ function loadThreads(): Thread[] {
 
 function saveThreads(threads: Thread[]): void {
   try {
-    localStorage.setItem(THREAD_STORAGE_KEY, JSON.stringify(threads));
+    const serialized = JSON.stringify(threads);
+    // Size guard: if payload > 4MB, strip preSummaryMessages from all threads
+    // to prevent quota exhaustion and silent state corruption.
+    if (serialized.length > 4 * 1024 * 1024) {
+      console.warn("saveThreads: payload exceeds 4MB, stripping preSummaryMessages to fit.");
+      const stripped = threads.map((t) =>
+        t.preSummaryMessages ? { ...t, preSummaryMessages: undefined, preSummaryMeta: undefined } : t
+      );
+      localStorage.setItem(THREAD_STORAGE_KEY, JSON.stringify(stripped));
+    } else {
+      localStorage.setItem(THREAD_STORAGE_KEY, serialized);
+    }
   } catch {
     // quota — ignore
   }
@@ -623,9 +635,9 @@ function ThreadRow({ thread, active, onSelect, onDelete, onTogglePin, onUpdateTa
     const existing = thread.tags ?? [];
     const newTags = tagDraft
       .split(",")
-      .map((t) => t.trim().toLowerCase())
+      .map((t) => t.trim().toLowerCase().slice(0, 40))
       .filter((t) => t.length > 0);
-    const merged = Array.from(new Set([...existing, ...newTags]));
+    const merged = Array.from(new Set([...existing, ...newTags])).slice(0, 10);
     onUpdateTags(merged);
     setTagDraft("");
     setTagInputOpen(false);
@@ -894,6 +906,7 @@ export default function Chat() {
   });
   const [threadSearch, setThreadSearch] = useState("");
   const [activeTagFilters, setActiveTagFilters] = useState<string[]>([]);
+  const [tagMatchAll, setTagMatchAll] = useState(false);
   const [summarizing, setSummarizing] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -2214,18 +2227,49 @@ export default function Chat() {
       }
       const newPinnedIds = (thread.pinnedMessageIds ?? []).filter((id) => keepIds.has(id));
 
+      // Build lossy snapshot: text-only excerpt, no image parts, max 1000 chars.
+      const toSummaryLossy: Message[] = toSummarize.map((m) => {
+        const textOnly = (m.parts ?? [])
+          .filter((p) => p.type === "text")
+          .map((p) => ("text" in p ? (p as { type: "text"; text: string }).text : ""))
+          .join("")
+          .slice(0, 1000);
+        return { id: m.id, role: m.role, parts: [{ type: "text" as const, text: textOnly }] };
+      });
+      const hadImages = toSummarize.some((m) =>
+        (m.parts ?? []).some((p) => p.type === "image" || p.type === "file")
+      );
+      const hadCode = toSummarize.some((m) =>
+        (m.parts ?? []).some((p) => p.type === "text" && "text" in p && /```/.test((p as { type: "text"; text: string }).text))
+      );
+
+      // Race defense: re-read current messages; append any sent-during-fetch messages.
       setThreads((prev) => {
+        const currentThread = prev.find((t) => t.id === activeThreadId);
+        const currentMsgs = currentThread?.messages ?? newMessages;
+        // If new messages arrived after our cutoff, append them after the summary.
+        const lateSent = currentMsgs.slice(msgs.length);
+        const finalMessages = lateSent.length > 0 ? [...newMessages, ...lateSent] : newMessages;
+
         const updated = prev.map((t) => {
           if (t.id !== activeThreadId) return t;
           return {
             ...t,
-            messages: newMessages,
+            messages: finalMessages,
             messageCosts: newCosts,
             pinnedMessageIds: newPinnedIds,
-            preSummaryMessages: toSummarize,
+            // Chain with existing snapshot so re-summarize keeps full history.
+            preSummaryMessages: [...(t.preSummaryMessages ?? []), ...toSummaryLossy],
+            preSummaryMeta: {
+              messageCount: (t.preSummaryMessages?.length ?? 0) + toSummarize.length,
+              hadImages: (t.preSummaryMeta?.hadImages ?? false) || hadImages,
+              hadCode: (t.preSummaryMeta?.hadCode ?? false) || hadCode,
+            },
           };
         });
         saveThreads(updated);
+        // Sync chat messages with any late-sent additions.
+        if (lateSent.length > 0) chat.setMessages(finalMessages);
         return updated;
       });
       chat.setMessages(newMessages);
@@ -2678,6 +2722,7 @@ export default function Chat() {
   const canSend =
     chat.status !== "streaming" &&
     chat.status !== "submitted" &&
+    !summarizing &&
     hasContent &&
     !visionBlockedByTier;
 
@@ -2824,12 +2869,59 @@ export default function Chat() {
 
                 const q = threadSearch.trim().toLowerCase();
 
-                // Apply tag filter on top of workspace filter
+                // Apply tag filter on top of workspace filter (OR by default, AND when tagMatchAll)
                 const tagFiltered = activeTagFilters.length > 0
                   ? workspaceThreads.filter((t) =>
-                      activeTagFilters.every((tag) => (t.tags ?? []).includes(tag))
+                      tagMatchAll
+                        ? activeTagFilters.every((tag) => (t.tags ?? []).includes(tag))
+                        : activeTagFilters.some((tag) => (t.tags ?? []).includes(tag))
                     )
                   : workspaceThreads;
+
+                // Single shared tag filter chip row — rendered once above all branches
+                const tagChips = allTags.length > 0 ? (
+                  <div className="px-2 pt-2 pb-1 space-y-1">
+                    <div className="flex flex-wrap gap-1">
+                      {allTags.map((tag) => (
+                        <button
+                          key={tag}
+                          type="button"
+                          onClick={() => setActiveTagFilters((prev) =>
+                            prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
+                          )}
+                          className={cn(
+                            "rounded-full px-2 py-0 text-[9px] font-medium border transition-colors",
+                            activeTagFilters.includes(tag)
+                              ? "bg-primary text-primary-foreground border-primary"
+                              : "bg-muted/50 text-muted-foreground border-border/50 hover:border-primary/40 hover:text-foreground"
+                          )}
+                        >
+                          #{tag}
+                        </button>
+                      ))}
+                      {activeTagFilters.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setActiveTagFilters([])}
+                          className="text-[9px] text-muted-foreground/50 hover:text-foreground transition-colors"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                    {activeTagFilters.length > 1 && (
+                      <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={tagMatchAll}
+                          onChange={(e) => setTagMatchAll(e.target.checked)}
+                          className="h-3 w-3 accent-primary"
+                        />
+                        <span className="text-[9px] text-muted-foreground/60">Match all</span>
+                      </label>
+                    )}
+                  </div>
+                ) : null;
 
                 // When searching: flat list filtered by title or any message body
                 if (q) {
@@ -2844,37 +2936,7 @@ export default function Chat() {
                   });
                   return (
                     <>
-                      {/* Tag filter chips */}
-                      {allTags.length > 0 && (
-                        <div className="px-2 pt-2 pb-1 flex flex-wrap gap-1">
-                          {allTags.map((tag) => (
-                            <button
-                              key={tag}
-                              type="button"
-                              onClick={() => setActiveTagFilters((prev) =>
-                                prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
-                              )}
-                              className={cn(
-                                "rounded-full px-2 py-0 text-[9px] font-medium border transition-colors",
-                                activeTagFilters.includes(tag)
-                                  ? "bg-primary text-primary-foreground border-primary"
-                                  : "bg-muted/50 text-muted-foreground border-border/50 hover:border-primary/40 hover:text-foreground"
-                              )}
-                            >
-                              #{tag}
-                            </button>
-                          ))}
-                          {activeTagFilters.length > 0 && (
-                            <button
-                              type="button"
-                              onClick={() => setActiveTagFilters([])}
-                              className="text-[9px] text-muted-foreground/50 hover:text-foreground transition-colors"
-                            >
-                              Clear
-                            </button>
-                          )}
-                        </div>
-                      )}
+                      {tagChips}
                       <p className="px-2 pt-2 pb-1 font-mono text-[10px] text-muted-foreground/50">
                         {matched.length} of {workspaceThreads.length} threads
                       </p>
@@ -2903,36 +2965,7 @@ export default function Chat() {
                 if (tagFiltered.length === 0) {
                   return (
                     <>
-                      {allTags.length > 0 && (
-                        <div className="px-2 pt-2 pb-1 flex flex-wrap gap-1">
-                          {allTags.map((tag) => (
-                            <button
-                              key={tag}
-                              type="button"
-                              onClick={() => setActiveTagFilters((prev) =>
-                                prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
-                              )}
-                              className={cn(
-                                "rounded-full px-2 py-0 text-[9px] font-medium border transition-colors",
-                                activeTagFilters.includes(tag)
-                                  ? "bg-primary text-primary-foreground border-primary"
-                                  : "bg-muted/50 text-muted-foreground border-border/50 hover:border-primary/40 hover:text-foreground"
-                              )}
-                            >
-                              #{tag}
-                            </button>
-                          ))}
-                          {activeTagFilters.length > 0 && (
-                            <button
-                              type="button"
-                              onClick={() => setActiveTagFilters([])}
-                              className="text-[9px] text-muted-foreground/50 hover:text-foreground transition-colors"
-                            >
-                              Clear
-                            </button>
-                          )}
-                        </div>
-                      )}
+                      {tagChips}
                       <p className="px-2 py-3 text-xs text-muted-foreground/50">
                         {activeTagFilters.length > 0 ? "No threads match selected tags." : "No conversations yet."}
                       </p>
@@ -2942,37 +2975,7 @@ export default function Chat() {
                 const groups = groupThreadsByBucket(tagFiltered);
                 return (
                   <>
-                    {/* Tag filter chips — shown above date groups */}
-                    {allTags.length > 0 && (
-                      <div className="px-2 pt-2 pb-1 flex flex-wrap gap-1">
-                        {allTags.map((tag) => (
-                          <button
-                            key={tag}
-                            type="button"
-                            onClick={() => setActiveTagFilters((prev) =>
-                              prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
-                            )}
-                            className={cn(
-                              "rounded-full px-2 py-0 text-[9px] font-medium border transition-colors",
-                              activeTagFilters.includes(tag)
-                                ? "bg-primary text-primary-foreground border-primary"
-                                : "bg-muted/50 text-muted-foreground border-border/50 hover:border-primary/40 hover:text-foreground"
-                            )}
-                          >
-                            #{tag}
-                          </button>
-                        ))}
-                        {activeTagFilters.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => setActiveTagFilters([])}
-                            className="text-[9px] text-muted-foreground/50 hover:text-foreground transition-colors"
-                          >
-                            Clear
-                          </button>
-                        )}
-                      </div>
-                    )}
+                    {tagChips}
                     {groups.map(({ bucket, threads: bucketThreads }) => (
                       <div key={bucket}>
                         <p className="mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/50 px-2 pt-3 pb-1">
@@ -3624,14 +3627,19 @@ export default function Chat() {
                           {activeThread?.preSummaryMessages && (
                             <div className="flex items-center justify-between rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
                               <span>
-                                Summarized {activeThread.preSummaryMessages.length} earlier messages
+                                Summarized {activeThread.preSummaryMeta?.messageCount ?? activeThread.preSummaryMessages.length} earlier messages
+                                {(activeThread.preSummaryMeta?.hadImages || activeThread.preSummaryMeta?.hadCode) && (
+                                  <span className="ml-1 text-[10px] opacity-70">
+                                    (text only — images{activeThread.preSummaryMeta?.hadCode ? " and code blocks" : ""} were not preserved in the snapshot)
+                                  </span>
+                                )}
                               </span>
                               <button
                                 type="button"
                                 onClick={handleUndoSummarize}
                                 className="text-primary hover:underline text-[11px] ml-3 shrink-0"
                               >
-                                Undo
+                                Restore
                               </button>
                             </div>
                           )}
@@ -4174,8 +4182,9 @@ export default function Chat() {
                   >
                     <textarea
                       ref={textareaRef}
+                      disabled={summarizing}
                       className="flex-1 resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none disabled:opacity-50 leading-relaxed max-h-40"
-                      placeholder={MODELS.find((m) => m.id === model)?.modality === "image" ? "Describe an image…" : "Message Tag… (type / for commands)"}
+                      placeholder={summarizing ? "Summarizing earlier messages…" : MODELS.find((m) => m.id === model)?.modality === "image" ? "Describe an image…" : "Message Tag… (type / for commands)"}
                       rows={1}
                       value={input}
                       onChange={(e) => {

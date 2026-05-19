@@ -62,10 +62,12 @@ export function AgentActivityLog({ jwt }: AgentActivityLogProps) {
   const [entries, setEntries] = useState<ToolCallEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [error, setError] = useState(false);
 
   const load = useCallback(async () => {
     if (!jwt) return;
     setLoading(true);
+    setError(false);
     try {
       const res = await fetch(
         `${SUPABASE_URL}/rest/v1/tool_call_history?select=id,tool,args,outcome,result_summary,created_at&order=created_at.desc&limit=20`,
@@ -79,9 +81,13 @@ export function AgentActivityLog({ jwt }: AgentActivityLogProps) {
       if (res.ok) {
         const data = await res.json();
         setEntries(Array.isArray(data) ? data : []);
+      } else {
+        console.error("AgentActivityLog fetch failed:", res.status, res.statusText);
+        setError(true);
       }
-    } catch {
-      // ignore transient errors
+    } catch (e) {
+      console.error("AgentActivityLog fetch failed:", e);
+      setError(true);
     } finally {
       setLoading(false);
     }
@@ -133,6 +139,10 @@ export function AgentActivityLog({ jwt }: AgentActivityLogProps) {
                 <div key={i} className="h-8 rounded bg-muted/50 animate-pulse" />
               ))}
             </div>
+          ) : error ? (
+            <p className="text-[10px] text-destructive/70 text-center py-2">
+              Could not load activity. Refresh to retry.
+            </p>
           ) : entries.length === 0 ? (
             <p className="text-[10px] text-muted-foreground/50 text-center py-2">
               No tool calls yet.
