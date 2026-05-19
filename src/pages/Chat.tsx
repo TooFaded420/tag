@@ -42,6 +42,7 @@ import {
 import { cn } from "@/lib/utils";
 import { ModelPicker, MODELS } from "@/components/chat/ModelPicker";
 import { BYOKDrawer, readBYOKKeys } from "@/components/chat/BYOKDrawer";
+import { OnboardingTour } from "@/components/chat/OnboardingTour";
 import { AccountDrawer } from "@/components/chat/AccountDrawer";
 import { WorkspaceSwitcher } from "@/components/chat/WorkspaceSwitcher";
 import { InviteDialog } from "@/components/chat/InviteDialog";
@@ -4681,6 +4682,21 @@ export default function Chat() {
         onKeysChange={setByokKeys}
         jwt={jwt}
       />
+
+      {/* First-time onboarding tour — signed-in users only, gated by localStorage */}
+      {jwt && localStorage.getItem("tag_onboarding_completed") !== "1" && (
+        <OnboardingTour
+          userId={userId}
+          onOpenBYOK={() => setByokOpen(true)}
+          onAddTemplate={(name, content) => {
+            try {
+              const existing = JSON.parse(localStorage.getItem("tag_prompt_templates_v1") ?? "[]");
+              existing.push({ id: Date.now().toString(), name, content });
+              localStorage.setItem("tag_prompt_templates_v1", JSON.stringify(existing));
+            } catch {}
+          }}
+        />
+      )}
 
       <AccountDrawer
         open={accountDrawerOpen}
