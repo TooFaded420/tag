@@ -161,6 +161,7 @@ const IMAGE_PROXY_URL = `${SUPABASE_URL}/functions/v1/synthetic-image-proxy`;
 const DEFAULT_MODEL = MODELS[0].id;
 const THREAD_STORAGE_KEY = "tag_threads_v1";
 const ACTIVE_THREAD_KEY = "tag_active_thread_v1";
+const EDIT_MAX_LENGTH = 12000;
 const ANON_SESSION_KEY = "tag_anon_session_v1";
 const TAG_ACTIVE_WORKSPACE_KEY = "tag_active_workspace_v1";
 const TEMPERATURE_KEY = "tag_temperature_v1";
@@ -706,6 +707,8 @@ export default function Chat() {
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   // Edit-message state: { msgId, text }
   const [editingMessage, setEditingMessage] = useState<{ msgId: string; text: string } | null>(null);
+  // Esc dirty-check: first Esc on dirty textarea arms a "confirm discard" state
+  const [editConfirmDiscard, setEditConfirmDiscard] = useState(false);
   // Pinned panel collapsed state
   const [pinnedPanelOpen, setPinnedPanelOpen] = useState(true);
   const exportMenuRef = useRef<HTMLDivElement>(null);
@@ -1769,6 +1772,7 @@ export default function Chat() {
       workspace_id: thread.workspace_id,
       pinned: false,
       systemPrompt: thread.systemPrompt,
+      pinnedMessageIds: (thread.pinnedMessageIds ?? []).filter((id) => forkedMessages.some((m) => m.id === id)),
     };
     setThreads((prev) => {
       const updated = [newThread, ...prev];
@@ -1786,6 +1790,7 @@ export default function Chat() {
 
   // ── Feature: Regenerate assistant response ──────────────────────────────
   const regenerateFromMessage = useCallback((assistantMsgId: string) => {
+    if (chat.status === "streaming" || chat.status === "submitted") return;
     const thread = threads.find((t) => t.id === activeThreadId);
     if (!thread) return;
     const msgIndex = thread.messages.findIndex((m) => m.id === assistantMsgId);
@@ -1801,17 +1806,40 @@ export default function Chat() {
       ? userMsg.parts.filter((p: { type?: string }) => p.type === "text").map((p: { text?: string }) => p.text ?? "").join("")
       : (userMsg as unknown as { content?: string }).content ?? "";
     if (!userText.trim()) return;
-    // Slice up to and including the user message
+    // Fork into a new thread with " (regen)" suffix — preserves original
     const sliced = thread.messages.slice(0, userMsgIndex + 1);
-    let newMessages: typeof sliced;
-    try { newMessages = structuredClone(sliced); } catch { newMessages = JSON.parse(JSON.stringify(sliced)); }
-    chat.setMessages(newMessages);
+    let base: typeof sliced;
+    try { base = structuredClone(sliced); } catch { base = JSON.parse(JSON.stringify(sliced)); }
+    const newThread: Thread = {
+      id: generateId(),
+      title: (thread.title || "Chat") + " (regen)",
+      createdAt: Date.now(),
+      messages: base,
+      workspace_id: thread.workspace_id,
+      pinned: false,
+      systemPrompt: thread.systemPrompt,
+      pinnedMessageIds: (thread.pinnedMessageIds ?? []).filter((id) => base.some((m) => m.id === id)),
+    };
+    setThreads((prev) => {
+      const updated = [newThread, ...prev];
+      saveThreads(updated);
+      return updated;
+    });
+    setActiveThreadId(newThread.id);
+    try { localStorage.setItem(ACTIVE_THREAD_KEY, newThread.id); } catch {}
+    chat.setMessages(base);
+    setInput("");
+    setMemoryActive(false);
+    setPendingImages([]);
+    pendingImagesRef.current = [];
     hasSentThisSessionRef.current = true;
     chat.sendMessage({ text: userText });
   }, [threads, activeThreadId, chat]);
 
   // ── Feature: Edit user message + branch ─────────────────────────────────
   const commitEditMessage = useCallback((msgId: string, newText: string) => {
+    if (chat.status === "streaming" || chat.status === "submitted") return;
+    if (newText.length > EDIT_MAX_LENGTH) return; // caller shows inline error
     const thread = threads.find((t) => t.id === activeThreadId);
     if (!thread) return;
     const msgIndex = thread.messages.findIndex((m) => m.id === msgId);
@@ -1827,6 +1855,7 @@ export default function Chat() {
       workspace_id: thread.workspace_id,
       pinned: false,
       systemPrompt: thread.systemPrompt,
+      pinnedMessageIds: (thread.pinnedMessageIds ?? []).filter((id) => base.some((m) => m.id === id)),
     };
     setThreads((prev) => {
       const updated = [newThread, ...prev];
@@ -3114,7 +3143,7 @@ export default function Chat() {
                               {pinnedPanelOpen && (
                                 <div className="flex flex-col divide-y divide-border/40">
                                   {activeThread.pinnedMessageIds.map((pid) => {
-                                    const pinned = chat.messages.find((m) => m.id === pid);
+                                    const pinned = activeThread.messages.find((m) => m.id === pid);
                                     if (!pinned) return null;
                                     const pinnedContent = pinned.parts
                                       ? pinned.parts.filter((p) => p.type === "text").map((p) => ("text" in p ? p.text : "")).join("")
@@ -3156,24 +3185,60 @@ export default function Chat() {
                                       <div className="flex flex-col gap-1.5 w-full">
                                         <textarea
                                           autoFocus
-                                          className="w-full rounded-2xl rounded-br-sm bg-primary/10 border border-primary/30 px-4 py-2.5 text-sm text-foreground leading-relaxed resize-none focus:outline-none focus:border-primary/60 min-h-[60px]"
+                                          className={cn(
+                                            "w-full rounded-2xl rounded-br-sm bg-primary/10 border px-4 py-2.5 text-sm text-foreground leading-relaxed resize-none focus:outline-none min-h-[60px]",
+                                            editConfirmDiscard
+                                              ? "border-amber-500 focus:border-amber-500"
+                                              : editingMessage.text.length > EDIT_MAX_LENGTH
+                                              ? "border-destructive focus:border-destructive"
+                                              : "border-primary/30 focus:border-primary/60"
+                                          )}
                                           value={editingMessage.text}
-                                          onChange={(e) => setEditingMessage({ msgId: msg.id, text: e.target.value })}
+                                          onChange={(e) => { setEditingMessage({ msgId: msg.id, text: e.target.value }); setEditConfirmDiscard(false); }}
                                           onKeyDown={(e) => {
-                                            if (e.key === "Escape") { e.preventDefault(); setEditingMessage(null); }
+                                            if (e.key === "Escape") {
+                                              e.preventDefault();
+                                              const isDirty = editingMessage.text !== content;
+                                              if (!isDirty || editConfirmDiscard) {
+                                                setEditingMessage(null);
+                                                setEditConfirmDiscard(false);
+                                              } else {
+                                                setEditConfirmDiscard(true);
+                                                setTimeout(() => setEditConfirmDiscard(false), 3000);
+                                              }
+                                            }
                                             if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); commitEditMessage(msg.id, editingMessage.text); }
                                           }}
                                         />
+                                        {editingMessage.text.length > EDIT_MAX_LENGTH && (
+                                          <p className="text-[11px] text-destructive px-1">Message too long ({editingMessage.text.length}/{EDIT_MAX_LENGTH} chars) — trim before branching.</p>
+                                        )}
+                                        {editConfirmDiscard && (
+                                          <p className="text-[11px] text-amber-600 px-1">Press Esc again to discard your edit.</p>
+                                        )}
                                         <div className="flex gap-1 justify-end">
-                                          <button type="button" onClick={() => setEditingMessage(null)} className="rounded px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">Cancel</button>
-                                          <button type="button" onClick={() => commitEditMessage(msg.id, editingMessage.text)} className="rounded px-2 py-0.5 text-xs bg-primary text-primary-foreground hover:bg-primary/90 transition-colors">Save &amp; branch</button>
+                                          <button type="button" onClick={() => { setEditingMessage(null); setEditConfirmDiscard(false); }} className="rounded px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">Cancel</button>
+                                          <button
+                                            type="button"
+                                            onClick={() => commitEditMessage(msg.id, editingMessage.text)}
+                                            disabled={editingMessage.text.length > EDIT_MAX_LENGTH}
+                                            className="rounded px-2 py-0.5 text-xs bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                          >Save &amp; branch</button>
                                         </div>
                                       </div>
                                     ) : (
                                       <div
-                                        className="rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground leading-relaxed whitespace-pre-wrap cursor-pointer group relative"
-                                        title="Click to edit and branch"
-                                        onClick={() => setEditingMessage({ msgId: msg.id, text: content })}
+                                        className={cn(
+                                          "rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground leading-relaxed whitespace-pre-wrap group relative",
+                                          chat.status === "streaming" || chat.status === "submitted"
+                                            ? "opacity-70 cursor-default"
+                                            : "cursor-pointer"
+                                        )}
+                                        title={chat.status === "streaming" || chat.status === "submitted" ? "Wait for response to finish" : "Click to edit and branch"}
+                                        onClick={() => {
+                                          if (chat.status === "streaming" || chat.status === "submitted") return;
+                                          setEditingMessage({ msgId: msg.id, text: content });
+                                        }}
                                       >
                                         {content}
                                         <Pencil className="absolute top-1.5 right-1.5 h-2.5 w-2.5 opacity-0 group-hover:opacity-40 transition-opacity" />
@@ -3254,9 +3319,10 @@ export default function Chat() {
                                       <button
                                         type="button"
                                         onClick={() => regenerateFromMessage(msg.id)}
-                                        title="Regenerate response"
+                                        disabled={chat.status === "streaming" || chat.status === "submitted"}
+                                        title={chat.status === "streaming" || chat.status === "submitted" ? "Wait for response to finish" : "Regenerate response"}
                                         aria-label="Regenerate response"
-                                        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground/50 hover:text-foreground hover:bg-muted transition-colors"
+                                        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground/50 hover:text-foreground hover:bg-muted transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground/50"
                                       >
                                         <RefreshCw className="h-3 w-3" />
                                       </button>
