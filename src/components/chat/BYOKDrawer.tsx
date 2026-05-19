@@ -151,9 +151,12 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onKeysChange?: (keys: StoredKeys) => void;
+  /** Supabase JWT for authenticated requests. If null/undefined, download is hidden. */
+  // TODO(wave-N): wire jwt from Chat.tsx once prop is wired up the component tree
+  jwt?: string | null;
 }
 
-export function BYOKDrawer({ open, onClose, onKeysChange }: Props) {
+export function BYOKDrawer({ open, onClose, onKeysChange, jwt }: Props) {
   const [keys, setKeys] = useState<StoredKeys>({});
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -169,6 +172,10 @@ export function BYOKDrawer({ open, onClose, onKeysChange }: Props) {
   const [importError, setImportError] = useState<string | null>(null);
   const [importSuccess, setImportSuccess] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+
+  // Download my data state
+  const [exportLoading, setExportLoading] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -263,6 +270,33 @@ export function BYOKDrawer({ open, onClose, onKeysChange }: Props) {
     reader.readAsText(file);
     // Reset file input so the same file can be re-selected
     e.target.value = "";
+  };
+
+  const handleDownloadData = async () => {
+    if (!jwt) return;
+    setExportLoading(true);
+    setExportError(null);
+    try {
+      const response = await fetch("/functions/v1/tag-export", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (!response.ok) throw new Error(`Server returned ${response.status}`);
+      const blob = await response.blob();
+      const disposition = response.headers.get("content-disposition") ?? "";
+      const match = disposition.match(/filename="([^"]+)"/);
+      const filename = match?.[1] ?? `hecz-export-${todayString()}.json`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setExportError("Could not generate export. Try again.");
+    } finally {
+      setExportLoading(false);
+    }
   };
 
   if (!open) return null;
@@ -519,6 +553,35 @@ export function BYOKDrawer({ open, onClose, onKeysChange }: Props) {
             )}
             {importSuccess && (
               <p className="text-xs text-emerald-600 dark:text-emerald-400">{importSuccess}</p>
+            )}
+          </div>
+
+          {/* ── Download my data ────────────────────────────────────────── */}
+          <div className="pt-2 border-t border-border space-y-2">
+            <p className="text-xs font-medium text-muted-foreground">Download my data</p>
+            <p className="text-xs text-muted-foreground">
+              Download a complete JSON export of your account: memories, threads in chat_usage, integrations metadata, tool history, shared threads. Sensitive fields (tokens, keys) are excluded.
+            </p>
+            {jwt ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleDownloadData}
+                  disabled={exportLoading}
+                  className="flex items-center justify-center gap-1.5 rounded-md border border-border px-3 py-2 text-xs hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed w-full"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  {exportLoading ? "Preparing…" : "Download"}
+                </button>
+                {exportError && (
+                  <p className="text-xs text-destructive flex items-center gap-1">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                    {exportError}
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground italic">Sign in to download your data.</p>
             )}
           </div>
 
