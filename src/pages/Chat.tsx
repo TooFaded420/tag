@@ -4,9 +4,13 @@ import { Helmet } from "react-helmet-async";
 import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import {
+  BookMarked,
   Brain,
+  Check,
+  Copy,
   Crown,
   Download,
+  GitFork,
   Key,
   Lock,
   LogIn,
@@ -152,6 +156,62 @@ const ACTIVE_THREAD_KEY = "tag_active_thread_v1";
 const ANON_SESSION_KEY = "tag_anon_session_v1";
 const TAG_ACTIVE_WORKSPACE_KEY = "tag_active_workspace_v1";
 const TEMPERATURE_KEY = "tag_temperature_v1";
+const MODEL_PRESETS_KEY = "tag_model_presets_v1";
+
+// ---------------------------------------------------------------------------
+// Model preset types + helpers
+// ---------------------------------------------------------------------------
+
+interface Preset {
+  id: string;
+  name: string;
+  model: string;
+  systemPrompt: string;
+  temperature: number;
+}
+
+function loadPresets(): Preset[] {
+  try {
+    const raw = localStorage.getItem(MODEL_PRESETS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (e: unknown): e is Preset =>
+        typeof e === "object" &&
+        e !== null &&
+        typeof (e as Record<string, unknown>).id === "string" &&
+        typeof (e as Record<string, unknown>).name === "string" &&
+        typeof (e as Record<string, unknown>).model === "string" &&
+        typeof (e as Record<string, unknown>).systemPrompt === "string" &&
+        typeof (e as Record<string, unknown>).temperature === "number",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function savePresets(presets: Preset[]): void {
+  try {
+    localStorage.setItem(MODEL_PRESETS_KEY, JSON.stringify(presets));
+  } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// Auto-title helper — first 6 words, title-cased, stripped of punctuation
+// ---------------------------------------------------------------------------
+
+function autoTitleFromMessage(text: string): string {
+  const words = text
+    .replace(/[^\w\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 6);
+  if (words.length === 0) return "";
+  return words
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
+}
 
 // ---------------------------------------------------------------------------
 // Thread management types + helpers
@@ -378,6 +438,30 @@ function EmptyState({ onPickPrompt }: EmptyStateProps) {
 }
 
 // ---------------------------------------------------------------------------
+// CopyButton — one-click copy with checkmark feedback
+// ---------------------------------------------------------------------------
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        }).catch(() => {});
+      }}
+      title="Copy message"
+      aria-label="Copy message"
+      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground/50 hover:text-foreground hover:bg-muted transition-colors"
+    >
+      {copied ? <Check className="h-3 w-3 text-primary" /> : <Copy className="h-3 w-3" />}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // ThreadRow — single item in the sidebar conversation list
 // ---------------------------------------------------------------------------
 
@@ -551,6 +635,11 @@ export default function Chat() {
   useEffect(() => {
     try { localStorage.setItem(TEMPERATURE_KEY, String(temperature)); } catch {}
   }, [temperature]);
+
+  // ── Model presets ───────────────────────────────────────────────────────────
+  const [presets, setPresets] = useState<Preset[]>(() => loadPresets());
+  const [presetsOpen, setPresetsOpen] = useState(false);
+  const presetsRef = useRef<HTMLDivElement>(null);
 
   // ── Sidebar / thread state — declared BEFORE any effect that references them ──
   const [sidebarOpen, setSidebarOpen] = useState(() => {
@@ -792,6 +881,11 @@ export default function Chat() {
       // { content: [{ type:"text", text:"..." }, { type:"image_url", image_url:{url:"data:..."} }, ...] }
       // Only Pro users can attach images (gate enforced in UI + here as a safety net).
       if (livePendingImages.length > 0 && latestUserMsg) {
+        // Guard: reject if total base64 payload exceeds 8 MB
+        const totalBase64 = livePendingImages.reduce((sum, img) => sum + img.dataUrl.length, 0);
+        if (totalBase64 > 8 * 1024 * 1024) {
+          throw new Error("Total image size exceeds 8 MB. Remove some images and try again.");
+        }
         const textPart = { type: "text", text: latestUserContent };
         const imageParts = livePendingImages.map((img) => ({
           type: "image_url",
@@ -951,6 +1045,7 @@ export default function Chat() {
         const directUrl = DIRECT_BYOK_PROVIDERS[activeBYOKProvider];
         response = await fetch(directUrl, {
           method: "POST",
+          signal: init?.signal,
           headers: {
             "Authorization": `Bearer ${activeBYOKKey}`,
             "Content-Type": "application/json",
@@ -970,13 +1065,14 @@ export default function Chat() {
             ...reqBody,
             messages: finalMessages,
             model: liveModel,
+            temperature: liveTemperature,
             byok_provider: activeBYOKProvider,
           }),
         });
       } else {
         response = await fetch(input as RequestInfo, {
           ...init,
-          body: JSON.stringify({ ...reqBody, messages: finalMessages, model: liveModel }),
+          body: JSON.stringify({ ...reqBody, messages: finalMessages, model: liveModel, temperature: liveTemperature }),
         });
       }
 
@@ -995,7 +1091,7 @@ export default function Chat() {
             response = await fetch(input as RequestInfo, {
               ...init,
               headers: retryHeaders,
-              body: JSON.stringify({ ...reqBody, messages: finalMessages, model: liveModel }),
+              body: JSON.stringify({ ...reqBody, messages: finalMessages, model: liveModel, temperature: liveTemperature }),
             });
           }
         } catch {
@@ -1080,6 +1176,11 @@ export default function Chat() {
 
       const upstreamBody = response.body;
 
+      // reader and silenceTimer live in closure scope so the cancel() method
+      // can reach them when the consumer abandons the stream.
+      let _reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+      let _silenceTimer: ReturnType<typeof setTimeout> | null = null;
+
       const stream = new ReadableStream({
         async start(controller) {
           const encoder = new TextEncoder();
@@ -1092,7 +1193,6 @@ export default function Chat() {
 
           // 10-second silence timeout — if the upstream stops sending bytes
           // entirely, abort so the UI doesn't hang indefinitely.
-          let silenceTimer: ReturnType<typeof setTimeout> | null = null;
           const SILENCE_TIMEOUT_MS = 10_000;
 
           if (!upstreamBody) {
@@ -1106,6 +1206,7 @@ export default function Chat() {
           }
 
           const reader = upstreamBody.getReader();
+          _reader = reader;
           const decoder = new TextDecoder();
           let sseBuffer = "";
           let streamErrored = false;
@@ -1116,15 +1217,19 @@ export default function Chat() {
           let contentStarted = false;
 
           const resetSilenceTimer = () => {
-            if (silenceTimer !== null) clearTimeout(silenceTimer);
-            silenceTimer = setTimeout(() => {
+            if (_silenceTimer !== null) clearTimeout(_silenceTimer);
+            _silenceTimer = setTimeout(() => {
               streamErrored = true;
               reader.cancel("upstream silence timeout").catch(() => {});
-              send({ type: "text-end", id: textId });
-              send({ type: "finish-step" });
-              send({ type: "finish" });
-              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-              controller.close();
+              try {
+                send({ type: "text-end", id: textId });
+                send({ type: "finish-step" });
+                send({ type: "finish" });
+                controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+                controller.close();
+              } catch {
+                // controller already released — consumer abandoned the stream
+              }
             }, SILENCE_TIMEOUT_MS);
           };
 
@@ -1136,7 +1241,7 @@ export default function Chat() {
               if (done || streamErrored) break;
 
               resetSilenceTimer();
-              sseBuffer += decoder.decode(value, { stream: true });
+              sseBuffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
 
               // Split on SSE event boundaries (\n\n). Keep the last incomplete chunk.
               const events = sseBuffer.split("\n\n");
@@ -1164,12 +1269,20 @@ export default function Chat() {
                       choice?.delta?.reasoning_content ?? "";
 
                     if (reasoningDelta) {
-                      // First reasoning chunk: prefix with blockquote marker so it
-                      // renders visually distinct from the final answer.
-                      const prefix = reasoningBuffer.length === 0 ? "> 🧠 *thinking…*\n> " : "";
+                      // Normalize newlines so each new line stays inside the blockquote.
+                      const normalized = reasoningDelta.replace(/\r\n/g, "\n").replace(/\n/g, "\n> ");
+                      let prefix: string;
+                      if (reasoningBuffer.length === 0) {
+                        // Very first reasoning chunk: open blockquote.
+                        prefix = "> 🧠 *thinking…*\n> ";
+                      } else if (contentStarted) {
+                        // Reasoning resumed after content — open a fresh blockquote block.
+                        prefix = "\n\n> 🧠 *thinking…*\n> ";
+                      } else {
+                        prefix = "";
+                      }
                       reasoningBuffer += reasoningDelta;
-                      // Emit reasoning chunks live as blockquote lines
-                      send({ type: "text-delta", id: textId, delta: prefix + reasoningDelta });
+                      send({ type: "text-delta", id: textId, delta: prefix + normalized });
                     }
                     if (delta) {
                       // First content chunk after reasoning: inject the blockquote
@@ -1190,7 +1303,46 @@ export default function Chat() {
           } catch {
             // reader.cancel() from silence timeout triggers a read error — handled above.
           } finally {
-            if (silenceTimer !== null) clearTimeout(silenceTimer);
+            if (_silenceTimer !== null) clearTimeout(_silenceTimer);
+          }
+
+          // Flush any residual partial event left in the buffer after the loop ends.
+          if (!streamErrored && sseBuffer.trim()) {
+            for (const line of sseBuffer.split("\n")) {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith("data:")) continue;
+              const raw = trimmed.slice(5).trim();
+              if (raw === "[DONE]") break;
+              try {
+                const parsed = JSON.parse(raw);
+                const choice = parsed?.choices?.[0];
+                const reasoningDelta: string = choice?.delta?.reasoning_content ?? "";
+                if (reasoningDelta) {
+                  const normalized = reasoningDelta.replace(/\r\n/g, "\n").replace(/\n/g, "\n> ");
+                  let prefix: string;
+                  if (reasoningBuffer.length === 0) {
+                    prefix = "> 🧠 *thinking…*\n> ";
+                  } else if (contentStarted) {
+                    prefix = "";
+                  } else {
+                    prefix = "";
+                  }
+                  reasoningBuffer += reasoningDelta;
+                  send({ type: "text-delta", id: textId, delta: prefix + normalized });
+                }
+                const delta: string = choice?.delta?.content ?? choice?.message?.content ?? "";
+                if (delta) {
+                  if (!contentStarted && reasoningBuffer && !reasoningEmitted) {
+                    reasoningEmitted = true;
+                    send({ type: "text-delta", id: textId, delta: "\n\n" });
+                  }
+                  contentStarted = true;
+                  send({ type: "text-delta", id: textId, delta });
+                }
+              } catch {
+                // malformed — skip
+              }
+            }
           }
 
           if (!streamErrored) {
@@ -1206,6 +1358,10 @@ export default function Chat() {
             lastWrittenMemoryRef.current = latestUserContent;
             writeMemory(latestUserContent, liveJwt, liveWorkspaceId);
           }
+        },
+        cancel(reason) {
+          if (_silenceTimer !== null) clearTimeout(_silenceTimer);
+          _reader?.cancel(reason).catch(() => {});
         },
       });
 
@@ -1247,6 +1403,38 @@ export default function Chat() {
       return updated;
     });
   }, [chat.messages, activeThreadId]);
+
+  // ── Auto-title: generate title from first user message after streaming ends ──
+  const autoTitledThreadsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (chat.status !== "ready" && chat.status !== "error") return;
+    if (!activeThreadId) return;
+    // Skip if already auto-titled this session
+    if (autoTitledThreadsRef.current.has(activeThreadId)) return;
+    const thread = threads.find((t) => t.id === activeThreadId);
+    if (!thread) return;
+    // Only auto-title threads with default/empty titles
+    if (thread.title && thread.title !== "New chat") return;
+    const firstUserMsg = thread.messages.find((m) => m.role === "user");
+    if (!firstUserMsg) return;
+    const text = firstUserMsg.parts
+      ? (firstUserMsg.parts.find((p) => p.type === "text") as { type: "text"; text: string } | undefined)?.text ?? ""
+      : (firstUserMsg as unknown as { content?: string }).content ?? "";
+    if (!text.trim()) return;
+    const generated = autoTitleFromMessage(text.trim());
+    if (!generated) return;
+    autoTitledThreadsRef.current.add(activeThreadId);
+    setThreads((prev) => {
+      const updated = prev.map((t) =>
+        t.id === activeThreadId && (!t.title || t.title === "New chat")
+          ? { ...t, title: generated }
+          : t
+      );
+      saveThreads(updated);
+      return updated;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chat.status, activeThreadId]);
 
   // ── Error banner visibility: show on new error AFTER user has actively sent
   // this session. Without the hasSent guard, rehydrated chat.error from old
@@ -1385,6 +1573,7 @@ export default function Chat() {
         saveThreads(updated);
         return updated;
       });
+      autoTitledThreadsRef.current.delete(threadId);
       if (threadId === activeThreadId) {
         createNewThread();
       }
@@ -1401,6 +1590,41 @@ export default function Chat() {
       return updated;
     });
   }, []);
+
+  const forkFromMessage = useCallback((messageId: string) => {
+    const thread = threads.find((t) => t.id === activeThreadId);
+    if (!thread) return;
+    const msgIndex = thread.messages.findIndex((m) => m.id === messageId);
+    if (msgIndex < 0) return;
+    const sliced = thread.messages.slice(0, msgIndex + 1);
+    let forkedMessages: typeof sliced;
+    try {
+      forkedMessages = structuredClone(sliced);
+    } catch {
+      forkedMessages = JSON.parse(JSON.stringify(sliced));
+    }
+    const newThread: Thread = {
+      id: generateId(),
+      title: (thread.title || "Chat") + " (fork)",
+      createdAt: Date.now(),
+      messages: forkedMessages,
+      workspace_id: thread.workspace_id,
+      pinned: false,
+      systemPrompt: thread.systemPrompt,
+    };
+    setThreads((prev) => {
+      const updated = [newThread, ...prev];
+      saveThreads(updated);
+      return updated;
+    });
+    setActiveThreadId(newThread.id);
+    try { localStorage.setItem(ACTIVE_THREAD_KEY, newThread.id); } catch {}
+    chat.setMessages(forkedMessages);
+    setInput("");
+    setMemoryActive(false);
+    setPendingImages([]);
+    pendingImagesRef.current = [];
+  }, [threads, activeThreadId, chat]);
 
   const saveSystemPrompt = useCallback((threadId: string, prompt: string) => {
     setThreads((prev) => {
@@ -1490,7 +1714,16 @@ export default function Chat() {
   }
 
   function handleImageAttached(img: PendingImage) {
-    setPendingImages((prev) => [...prev, img]);
+    if (!img.dataUrl.startsWith("data:image/")) return;
+    setPendingImages((prev) => {
+      if (prev.length >= 4) {
+        setPendingFileNote("Max 4 images per message. Remove one before adding more.");
+        return prev;
+      }
+      const next = [...prev, img];
+      pendingImagesRef.current = next;
+      return next;
+    });
   }
 
   function removePendingImage(idx: number) {
@@ -1526,6 +1759,50 @@ export default function Chat() {
       setShareStatus("idle");
     }
   }
+
+  function handleSavePreset() {
+    const name = window.prompt("Preset name:");
+    if (!name?.trim()) return;
+    const activeThread = threads.find((t) => t.id === activeThreadId);
+    const newPreset: Preset = {
+      id: generateId(),
+      name: name.trim(),
+      model,
+      systemPrompt: activeThread?.systemPrompt ?? "",
+      temperature,
+    };
+    const updated = [...presets, newPreset];
+    setPresets(updated);
+    savePresets(updated);
+    setPresetsOpen(false);
+  }
+
+  function handleApplyPreset(preset: Preset) {
+    setModel(preset.model);
+    setTemperature(preset.temperature);
+    if (activeThreadId && preset.systemPrompt !== undefined) {
+      saveSystemPrompt(activeThreadId, preset.systemPrompt);
+    }
+    setPresetsOpen(false);
+  }
+
+  function handleDeletePreset(presetId: string) {
+    const updated = presets.filter((p) => p.id !== presetId);
+    setPresets(updated);
+    savePresets(updated);
+  }
+
+  // Close presets popover on outside click
+  useEffect(() => {
+    if (!presetsOpen) return;
+    function onPointerDown(e: PointerEvent) {
+      if (presetsRef.current && !presetsRef.current.contains(e.target as Node)) {
+        setPresetsOpen(false);
+      }
+    }
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [presetsOpen]);
 
   const isEmpty = chat.messages.length === 0;
 
@@ -1875,6 +2152,65 @@ export default function Chat() {
             {/* Model picker — only in chat mode; agent picks its own model */}
             {view === "chat" && <ModelPicker value={model} onChange={setModel} onUpgrade={handleUpgrade} tier={tier} />}
 
+            {/* Presets popover — chat mode only */}
+            {view === "chat" && (
+              <div className="relative" ref={presetsRef}>
+                <button
+                  type="button"
+                  onClick={() => setPresetsOpen((o) => !o)}
+                  title="Model presets"
+                  aria-label="Model presets"
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors",
+                    presetsOpen
+                      ? "text-primary bg-primary/10"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                  )}
+                >
+                  <BookMarked className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline text-[11px]">Presets</span>
+                </button>
+                {presetsOpen && (
+                  <div className="absolute right-0 top-full mt-1 z-50 w-56 rounded-lg border border-border bg-card shadow-lg overflow-hidden">
+                    {presets.length === 0 ? (
+                      <p className="px-3 py-2.5 text-xs text-muted-foreground">No presets saved yet.</p>
+                    ) : (
+                      <ul className="max-h-60 overflow-y-auto">
+                        {presets.map((preset) => (
+                          <li key={preset.id} className="group flex items-center gap-1 border-b border-border/40 last:border-b-0">
+                            <button
+                              type="button"
+                              onClick={() => handleApplyPreset(preset)}
+                              className="flex-1 flex flex-col items-start gap-0.5 px-3 py-2 text-left hover:bg-muted transition-colors"
+                            >
+                              <span className="text-xs font-medium text-foreground truncate w-full">{preset.name}</span>
+                              <span className="font-mono text-[10px] text-muted-foreground/60 truncate w-full">{preset.model} · t={preset.temperature.toFixed(1)}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeletePreset(preset.id)}
+                              aria-label={`Delete preset ${preset.name}`}
+                              className="mr-1.5 rounded p-0.5 text-muted-foreground/40 opacity-0 group-hover:opacity-100 hover:text-destructive transition-colors"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleSavePreset}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground hover:text-foreground hover:bg-muted border-t border-border/40 transition-colors"
+                    >
+                      <Check className="h-3 w-3" />
+                      Save current as preset
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Memory indicator + toggle — only in chat mode */}
             {jwt && view === "chat" && (
               <button
@@ -2200,6 +2536,16 @@ export default function Chat() {
                                         text={content}
                                         byokKey={byokKeys?.["openai"]}
                                       />
+                                      <CopyButton text={content} />
+                                      <button
+                                        type="button"
+                                        onClick={() => forkFromMessage(msg.id)}
+                                        title="Fork conversation from here"
+                                        aria-label="Fork conversation from here"
+                                        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground/50 hover:text-foreground hover:bg-muted transition-colors"
+                                      >
+                                        <GitFork className="h-3 w-3" />
+                                      </button>
                                     </div>
                                   )}
                                 </div>
@@ -2486,6 +2832,18 @@ export default function Chat() {
                   <form
                     onSubmit={(e) => {
                       e.preventDefault();
+                      if (slashOpen) {
+                        // Accept the first filtered slash command rather than submitting raw input.
+                        const partial = input.slice(1).toLowerCase();
+                        const filtered = SLASH_COMMANDS.filter((c) => c.trigger.slice(1).startsWith(partial));
+                        if (filtered.length > 0) {
+                          setInput(filtered[0].trigger + " ");
+                          setSlashOpen(false);
+                          return;
+                        }
+                        // Zero matches — close dropdown and fall through to normal submit.
+                        setSlashOpen(false);
+                      }
                       if (!input.trim()) return;
                       if (!activeThreadId) createNewThread();
                       hasSentThisSessionRef.current = true;

@@ -141,6 +141,10 @@ export function FileDropzone({ jwt, tier, onIngested, onImageAttached }: FileDro
           reader.onerror = () => reject(reader.error);
           reader.readAsDataURL(file);
         });
+        if (!dataUrl.startsWith("data:image/")) {
+          setUploadState({ status: "error", message: "Invalid image format." });
+          return;
+        }
         const mimeType = file.type.split(";")[0].trim() || "image/png";
         onImageAttached?.({ dataUrl, mimeType, name: file.name });
         setUploadState({ status: "success", filename: file.name, chunks: 0, isImage: true });

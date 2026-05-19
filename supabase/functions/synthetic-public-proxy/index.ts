@@ -467,6 +467,25 @@ serve(async (req) => {
     }
   }
 
+  // ── Vision tier gate ─────────────────────────────────────────────────────
+  // Image content is only available to Pro users. Use an allowlist approach:
+  // - array content: every part must have type === "text"; anything else is vision.
+  // - string content: reject if it contains a base64 data URI.
+  // Check all messages, not just the last.
+  const hasVisionContent = body.messages.some((msg) => {
+    if (Array.isArray(msg.content)) {
+      // deno-lint-ignore no-explicit-any
+      return msg.content.some((part: any) => part?.type !== "text");
+    }
+    if (typeof msg.content === "string") {
+      return /data:image\//i.test(msg.content);
+    }
+    return false;
+  });
+  if (hasVisionContent && tier !== "pro") {
+    return errorResponse({ error: "vision_requires_pro" }, 403);
+  }
+
   // ── Build upstream request ────────────────────────────────────────────────
   const isByok = !!body.byok_key;
   const upstreamUrl = isByok
