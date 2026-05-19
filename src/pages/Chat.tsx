@@ -838,17 +838,30 @@ export default function Chat() {
 
   // ── Auto-save indicator ─────────────────────────────────────────────────
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   function saveThreadsWithIndicator(threads: Thread[]): void {
     setSaveState("saving");
     saveThreads(threads);
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    // Short pulse — resolve to "saved" after 300ms
-    saveTimerRef.current = setTimeout(() => {
+    // Clear all pending save timers before scheduling new ones
+    saveTimersRef.current.forEach((id) => clearTimeout(id));
+    saveTimersRef.current.clear();
+    // Short pulse — resolve to "saved" after 300ms, then back to idle after 2s
+    const t1 = setTimeout(() => {
       setSaveState("saved");
-      saveTimerRef.current = setTimeout(() => setSaveState("idle"), 2000);
+      const t2 = setTimeout(() => {
+        setSaveState("idle");
+        saveTimersRef.current.delete(t2);
+      }, 2000);
+      saveTimersRef.current.add(t2);
+      saveTimersRef.current.delete(t1);
     }, 300);
+    saveTimersRef.current.add(t1);
   }
+  // Cleanup all pending save timers on unmount
+  useEffect(() => () => {
+    saveTimersRef.current.forEach((id) => clearTimeout(id));
+    saveTimersRef.current.clear();
+  }, []);
 
   // ── Model info popover ──────────────────────────────────────────────────
   const [modelInfoOpen, setModelInfoOpen] = useState(false);
