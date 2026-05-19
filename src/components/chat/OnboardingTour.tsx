@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { X, ArrowRight } from "lucide-react";
 
 const STORAGE_KEY = "tag_onboarding_completed";
@@ -7,6 +7,7 @@ interface OnboardingTourProps {
   userId: string | null;
   onOpenBYOK: () => void;
   onAddTemplate: (name: string, content: string) => void;
+  onClose?: () => void;
 }
 
 const STEPS = [
@@ -27,9 +28,16 @@ const STEPS = [
   },
 ];
 
-export function OnboardingTour({ userId, onOpenBYOK, onAddTemplate }: OnboardingTourProps) {
+export function OnboardingTour({ userId, onOpenBYOK, onAddTemplate, onClose }: OnboardingTourProps) {
   const [step, setStep] = useState(0);
   const [visible, setVisible] = useState(true);
+
+  // FIX 5: stable reference so keydown useEffect dep array is accurate.
+  const complete = useCallback(() => {
+    try { localStorage.setItem(STORAGE_KEY, "1"); } catch {}
+    setVisible(false);
+    onClose?.();
+  }, [onClose]);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -39,13 +47,7 @@ export function OnboardingTour({ userId, onOpenBYOK, onAddTemplate }: Onboarding
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  function complete() {
-    try { localStorage.setItem(STORAGE_KEY, "1"); } catch {}
-    setVisible(false);
-  }
+  }, [complete]);
 
   function handleCTA() {
     if (step === 0) {

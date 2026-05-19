@@ -6,7 +6,7 @@
  * opens a fullscreen overlay; hovering shows prompt + copy button.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Copy, Image, Loader2, X, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -97,6 +97,13 @@ export function ImageGenPanel({ jwt }: ImageGenPanelProps) {
       loadHistory();
     }
   }, [open, jwt, loadHistory]);
+
+  // FIX 1 (client-side): Defense in depth — filter any non-https URLs before render.
+  // Prevents XSS if a bad URL somehow lands in the DB or is returned by the API.
+  const safeImages = useMemo(
+    () => images.filter((i) => typeof i.image_url === "string" && i.image_url.startsWith("https://")),
+    [images],
+  );
 
   if (!jwt) return null;
 
@@ -262,17 +269,17 @@ export function ImageGenPanel({ jwt }: ImageGenPanelProps) {
             </button>
 
             {/* Recent images grid */}
-            {loadingHistory && images.length === 0 ? (
+            {loadingHistory && safeImages.length === 0 ? (
               <div className="flex justify-center py-4">
                 <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
               </div>
-            ) : images.length > 0 ? (
+            ) : safeImages.length > 0 ? (
               <div className="flex flex-col gap-1.5">
                 <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
                   Recent
                 </span>
                 <div className="grid grid-cols-3 gap-1.5">
-                  {images.map((img) => (
+                  {safeImages.map((img) => (
                     <div key={img.id} className="relative group aspect-square rounded-md overflow-hidden bg-muted/40">
                       <img
                         src={img.image_url}

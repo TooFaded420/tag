@@ -965,6 +965,15 @@ export default function Chat() {
   const [pinnedPanelOpen, setPinnedPanelOpen] = useState(true);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  // FIX 4: useState initializer for onboarding gate — avoids localStorage read
+  // on every render and handles storage-blocked environments (fail-safe: hide tour).
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    try {
+      return localStorage.getItem("tag_onboarding_completed") !== "1";
+    } catch {
+      return false;
+    }
+  });
   const temperatureRef = useRef(temperature);
   useEffect(() => { temperatureRef.current = temperature; }, [temperature]);
   useEffect(() => {
@@ -4687,11 +4696,12 @@ export default function Chat() {
         jwt={jwt}
       />
 
-      {/* First-time onboarding tour — signed-in users only, gated by localStorage */}
-      {jwt && localStorage.getItem("tag_onboarding_completed") !== "1" && (
+      {/* First-time onboarding tour — signed-in users only, gated by React state */}
+      {jwt && showOnboarding && (
         <OnboardingTour
           userId={userId}
           onOpenBYOK={() => setByokOpen(true)}
+          onClose={() => setShowOnboarding(false)}
           onAddTemplate={(name, content) => {
             try {
               const existing = JSON.parse(localStorage.getItem("tag_prompt_templates_v1") ?? "[]");
