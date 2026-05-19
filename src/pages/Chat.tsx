@@ -7,6 +7,7 @@ import {
   BookMarked,
   Brain,
   Check,
+  ChevronDown,
   Copy,
   Crown,
   Download,
@@ -25,6 +26,7 @@ import {
   Terminal,
   Thermometer,
   Trash2,
+  Upload,
   X,
   SearchCode,
 } from "lucide-react";
@@ -171,6 +173,24 @@ const MODEL_COSTS: Record<string, { in: number; out: number }> = {
   "hf:MiniMaxAI/MiniMax-M2.5": { in: 0.4,  out: 2.0 },
   "hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4": { in: 0.3, out: 1.0 },
 };
+
+// Context window sizes per model (in tokens)
+const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  "hf:openai/gpt-oss-120b":    128000,
+  "claude-sonnet-4":            200000,
+  "claude-sonnet-4-5":          200000,
+  "hf:deepseek/deepseek-v3.1":  128000,
+  "hf:moonshotai/Kimi-K2.6":    256000,
+  "hf:zai-org/GLM-5.1":         202000,
+  "hf:zai-org/GLM-4.7-Flash":   131072,
+  "hf:MiniMaxAI/MiniMax-M2.5":  40960,
+  "hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4": 262000,
+};
+const DEFAULT_CONTEXT_WINDOW = 32000;
+
+function getContextWindow(modelId: string): number {
+  return MODEL_CONTEXT_WINDOWS[modelId] ?? DEFAULT_CONTEXT_WINDOW;
+}
 
 function estimateCost(content: string, modelId: string): number {
   const rates = MODEL_COSTS[modelId];
@@ -677,6 +697,12 @@ export default function Chat() {
     } catch { return 0.7; }
   });
   const [tempSliderOpen, setTempSliderOpen] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [contextBadgeOpen, setContextBadgeOpen] = useState(false);
+  const contextBadgeRef = useRef<HTMLDivElement>(null);
   const temperatureRef = useRef(temperature);
   useEffect(() => { temperatureRef.current = temperature; }, [temperature]);
   useEffect(() => {
@@ -1789,6 +1815,81 @@ export default function Chat() {
     a.download = `${slug}.md`;
     a.click();
     URL.revokeObjectURL(url);
+    setExportMenuOpen(false);
+  }
+
+  function handleExportJSON() {
+    const thread = threads.find((t) => t.id === activeThreadId);
+    if (!thread) return;
+    const title = thread.title || "Untitled conversation";
+    const date = new Date().toISOString().slice(0, 10);
+    const payload = {
+      title,
+      model,
+      systemPrompt: thread.systemPrompt ?? "",
+      temperature,
+      messageCosts: thread.messageCosts ?? {},
+      messages: thread.messages,
+      exportedAt: new Date().toISOString(),
+      exportedFrom: "tag — hecz.dev/chat",
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const slug = title.replace(/[^a-z0-9-]+/gi, "-").slice(0, 40).replace(/-+$/, "") || `tag-thread-${thread.id.slice(0, 8)}`;
+    a.href = url;
+    a.download = `${slug}-${date}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setExportMenuOpen(false);
+  }
+
+  function handleImportJSON(file: File) {
+    setImportError(null);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const raw = e.target?.result;
+        if (typeof raw !== "string") throw new Error("Could not read file.");
+        const parsed = JSON.parse(raw);
+        if (typeof parsed !== "object" || parsed === null) throw new Error("Invalid JSON structure.");
+        if (!Array.isArray(parsed.messages)) throw new Error("Missing required field: messages (array).");
+        if (typeof parsed.title !== "string") throw new Error("Missing required field: title (string).");
+        // Validate messageCosts shape if present
+        const messageCosts: Record<string, number> = {};
+        if (parsed.messageCosts && typeof parsed.messageCosts === "object") {
+          for (const [k, v] of Object.entries(parsed.messageCosts)) {
+            if (typeof v === "number") messageCosts[k] = v;
+          }
+        }
+        const newThread: Thread = {
+          id: generateId(),
+          title: parsed.title,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          messages: parsed.messages,
+          systemPrompt: typeof parsed.systemPrompt === "string" ? parsed.systemPrompt : undefined,
+          messageCosts: Object.keys(messageCosts).length > 0 ? messageCosts : undefined,
+        };
+        // Apply model + temperature if valid
+        if (typeof parsed.model === "string" && parsed.model) {
+          setModel(parsed.model);
+        }
+        if (typeof parsed.temperature === "number") {
+          setTemperature(Math.min(1.5, Math.max(0, parsed.temperature)));
+        }
+        const updated = [newThread, ...threads];
+        setThreads(updated);
+        saveThreads(updated);
+        setActiveThreadId(newThread.id);
+        try { localStorage.setItem(ACTIVE_THREAD_KEY, newThread.id); } catch {}
+        setExportMenuOpen(false);
+      } catch (err) {
+        setImportError(err instanceof Error ? err.message : "Failed to import file.");
+        setTimeout(() => setImportError(null), 8000);
+      }
+    };
+    reader.readAsText(file);
   }
 
   // ── Upgrade ──────────────────────────────────────────────────────────────
@@ -1926,9 +2027,53 @@ export default function Chat() {
     return () => window.removeEventListener("pointerdown", onPointerDown);
   }, [presetsOpen]);
 
+  // Close export menu on outside click
+  useEffect(() => {
+    if (!exportMenuOpen) return;
+    function onPointerDown(e: PointerEvent) {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setExportMenuOpen(false);
+      }
+    }
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [exportMenuOpen]);
+
+  // Close context badge popover on outside click
+  useEffect(() => {
+    if (!contextBadgeOpen) return;
+    function onPointerDown(e: PointerEvent) {
+      if (contextBadgeRef.current && !contextBadgeRef.current.contains(e.target as Node)) {
+        setContextBadgeOpen(false);
+      }
+    }
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [contextBadgeOpen]);
+
   const isEmpty = chat.messages.length === 0;
   // Derived active thread for cost lookup and other render-time reads
   const activeThread = threads.find((t) => t.id === activeThreadId) ?? null;
+
+  // ── Context window utilization ────────────────────────────────────────────
+  const contextStats = useMemo(() => {
+    const thread = threads.find((t) => t.id === activeThreadId);
+    if (!thread || thread.messages.length === 0) return null;
+    const msgChars = thread.messages.reduce((sum, msg) => {
+      const body = msg.parts
+        ? msg.parts.filter((p) => p.type === "text").map((p) => ("text" in p ? p.text : "")).join("")
+        : (msg as unknown as { content?: string }).content ?? "";
+      return sum + body.length;
+    }, 0);
+    const sysPromptChars = (thread.systemPrompt ?? "").length;
+    const SYS_OVERHEAD = 300; // rough tokens for system framing
+    const msgTokens = Math.round(msgChars / 3.3);
+    const sysTokens = Math.round(sysPromptChars / 3.3) + SYS_OVERHEAD;
+    const totalTokens = msgTokens + sysTokens;
+    const windowSize = getContextWindow(model);
+    const pct = totalTokens / windowSize;
+    return { msgTokens, sysTokens, totalTokens, windowSize, pct };
+  }, [threads, activeThreadId, model]);
 
   // ── Memoized cross-thread search results ─────────────────────────────────
   type SearchResult = { threadId: string; threadTitle: string; messageId: string; snippet: string; matchStart: number };
@@ -2448,17 +2593,129 @@ export default function Chat() {
               )
             )}
 
-            {/* Export button — chat mode + has messages */}
-            {view === "chat" && chat.messages.length > 0 && (
-              <button
-                type="button"
-                onClick={handleExportThread}
-                title="Export conversation as Markdown"
-                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-              >
-                <Download className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline text-[11px]">Export</span>
-              </button>
+            {/* Export / Import menu — chat mode; always visible (import doesn't need messages) */}
+            {view === "chat" && (
+              <div className="relative" ref={exportMenuRef}>
+                {/* Hidden file input for import */}
+                <input
+                  ref={importInputRef}
+                  type="file"
+                  accept=".json"
+                  className="sr-only"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleImportJSON(file);
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setExportMenuOpen((o) => !o)}
+                  title="Export or import conversation"
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs transition-colors",
+                    exportMenuOpen
+                      ? "text-primary bg-primary/10"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                  )}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline text-[11px]">Export</span>
+                  <ChevronDown className="h-3 w-3 opacity-60" />
+                </button>
+                {exportMenuOpen && (
+                  <div className="absolute right-0 top-full mt-1 z-50 w-52 rounded-lg border border-border bg-card shadow-lg overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={handleExportThread}
+                      disabled={chat.messages.length === 0}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted transition-colors disabled:opacity-40"
+                    >
+                      <Download className="h-3.5 w-3.5 text-muted-foreground" />
+                      Export as Markdown
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleExportJSON}
+                      disabled={chat.messages.length === 0}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted transition-colors disabled:opacity-40 border-t border-border/40"
+                    >
+                      <Download className="h-3.5 w-3.5 text-muted-foreground" />
+                      Export as JSON
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => importInputRef.current?.click()}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted transition-colors border-t border-border/40"
+                    >
+                      <Upload className="h-3.5 w-3.5 text-muted-foreground" />
+                      Import JSON
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Context window badge — chat mode + has messages */}
+            {view === "chat" && contextStats !== null && (
+              <div className="relative" ref={contextBadgeRef}>
+                <button
+                  type="button"
+                  onClick={() => setContextBadgeOpen((o) => !o)}
+                  title="Context window usage"
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-mono transition-colors hover:bg-muted",
+                    contextStats.pct >= 0.8
+                      ? "text-destructive"
+                      : contextStats.pct >= 0.5
+                      ? "text-amber-600"
+                      : "text-muted-foreground"
+                  )}
+                >
+                  ~{contextStats.totalTokens >= 1000
+                    ? `${(contextStats.totalTokens / 1000).toFixed(0)}k`
+                    : contextStats.totalTokens}
+                  {" / "}
+                  {contextStats.windowSize >= 1000
+                    ? `${(contextStats.windowSize / 1000).toFixed(0)}k`
+                    : contextStats.windowSize}
+                </button>
+                {contextBadgeOpen && (
+                  <div className="absolute right-0 top-full mt-1 z-50 w-64 rounded-lg border border-border bg-card shadow-lg p-3 space-y-1.5">
+                    <p className="text-[11px] font-medium text-foreground mb-2">Context window usage</p>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-muted-foreground">Messages</span>
+                      <span className="font-mono text-foreground">~{contextStats.msgTokens.toLocaleString()} tokens</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-muted-foreground">System prompt</span>
+                      <span className="font-mono text-foreground">~{contextStats.sysTokens.toLocaleString()} tokens</span>
+                    </div>
+                    <div className="h-px bg-border/60 my-1" />
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-muted-foreground">Total used</span>
+                      <span className={cn(
+                        "font-mono font-medium",
+                        contextStats.pct >= 0.8 ? "text-destructive" : contextStats.pct >= 0.5 ? "text-amber-600" : "text-foreground"
+                      )}>
+                        ~{contextStats.totalTokens.toLocaleString()} / {contextStats.windowSize.toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="mt-2 h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                      <div
+                        className={cn(
+                          "h-full rounded-full transition-all",
+                          contextStats.pct >= 0.8 ? "bg-destructive" : contextStats.pct >= 0.5 ? "bg-amber-500" : "bg-primary"
+                        )}
+                        style={{ width: `${Math.min(100, contextStats.pct * 100).toFixed(1)}%` }}
+                      />
+                    </div>
+                    <p className="text-[10px] text-muted-foreground/60 pt-0.5">
+                      {(contextStats.pct * 100).toFixed(1)}% used · estimate via chars / 3.3
+                    </p>
+                  </div>
+                )}
+              </div>
             )}
 
             {/* System prompt button — chat mode only */}
@@ -2548,6 +2805,23 @@ export default function Chat() {
                   <X className="h-3.5 w-3.5" />
                 </button>
               </div>
+            </div>
+          )}
+
+          {importError && (
+            <div
+              role="alert"
+              className="mx-4 mt-2 flex items-start justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/8 px-4 py-3 text-sm text-destructive"
+            >
+              <span>Import failed: {importError}</span>
+              <button
+                type="button"
+                aria-label="Dismiss import error"
+                onClick={() => setImportError(null)}
+                className="shrink-0 text-destructive/60 hover:text-destructive transition-colors"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
             </div>
           )}
 
