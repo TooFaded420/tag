@@ -2953,19 +2953,6 @@ export default function Chat() {
               </button>
             </div>
 
-            {/* Workspace switcher — sidebar instance (sign-in only).
-                Top-bar pill instance lives in the main header above. */}
-            {jwt && (
-              <WorkspaceSwitcher
-                jwt={jwt}
-                activeWorkspaceId={activeWorkspaceId}
-                onChange={(id) => {
-                  setActiveWorkspaceId(id);
-                  createNewThread();
-                }}
-              />
-            )}
-
             {/* Threads label + search */}
             <div className="px-3 pt-3 pb-1.5 space-y-2">
               <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/50">
