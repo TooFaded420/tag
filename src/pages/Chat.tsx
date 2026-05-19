@@ -534,10 +534,10 @@ interface EmptyStateProps {
   model: string;
   temperature: number;
   jwt: string | null;
-  onOpenTemp: () => void;
+  onOpenSettings: () => void;
 }
 
-function EmptyState({ onPickPrompt, templates, model, temperature, jwt, onOpenTemp }: EmptyStateProps) {
+function EmptyState({ onPickPrompt, templates, model, temperature, jwt, onOpenSettings }: EmptyStateProps) {
   const [tipIndex, setTipIndex] = useState(0);
   useEffect(() => {
     const t = setInterval(() => setTipIndex((i) => (i + 1) % PRO_TIPS.length), 4000);
@@ -600,7 +600,7 @@ function EmptyState({ onPickPrompt, templates, model, temperature, jwt, onOpenTe
         <span className="text-muted-foreground/30">·</span>
         <button
           type="button"
-          onClick={onOpenTemp}
+          onClick={onOpenSettings}
           className="hover:text-foreground transition-colors"
           title="Adjust temperature"
         >
@@ -864,19 +864,19 @@ export default function Chat() {
     saveTimersRef.current.clear();
   }, []);
 
-  // ── Model info popover ──────────────────────────────────────────────────
-  const [modelInfoOpen, setModelInfoOpen] = useState(false);
-  const modelInfoRef = useRef<HTMLDivElement>(null);
+  // ── Settings overflow popover ─────────────────────────────────────────────
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!modelInfoOpen) return;
-    const handleClick = (e: MouseEvent) => {
-      if (modelInfoRef.current && !modelInfoRef.current.contains(e.target as Node)) {
-        setModelInfoOpen(false);
+    if (!settingsOpen) return;
+    function onPointerDown(e: PointerEvent) {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
+        setSettingsOpen(false);
       }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [modelInfoOpen]);
+    }
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [settingsOpen]);
   const [upgrading, setUpgrading] = useState(false);
   const [byokOpen, setByokOpen] = useState(false);
   const [byokKeys, setByokKeys] = useState(() => readBYOKKeys());
@@ -953,19 +953,15 @@ export default function Chat() {
       return isNaN(v) ? 0.7 : Math.min(1.5, Math.max(0, v));
     } catch { return 0.7; }
   });
-  const [tempSliderOpen, setTempSliderOpen] = useState(false);
-  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false); // kept for handleExportThread/JSON which call setExportMenuOpen(false)
   // Edit-message state: { msgId, text }
   const [editingMessage, setEditingMessage] = useState<{ msgId: string; text: string } | null>(null);
   // Esc dirty-check: first Esc on dirty textarea arms a "confirm discard" state
   const [editConfirmDiscard, setEditConfirmDiscard] = useState(false);
   // Pinned panel collapsed state
   const [pinnedPanelOpen, setPinnedPanelOpen] = useState(true);
-  const exportMenuRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [importError, setImportError] = useState<string | null>(null);
-  const [contextBadgeOpen, setContextBadgeOpen] = useState(false);
-  const contextBadgeRef = useRef<HTMLDivElement>(null);
   const temperatureRef = useRef(temperature);
   useEffect(() => { temperatureRef.current = temperature; }, [temperature]);
   useEffect(() => {
@@ -2769,17 +2765,6 @@ export default function Chat() {
     return () => window.removeEventListener("pointerdown", onPointerDown);
   }, [presetsOpen]);
 
-  // Close export menu on outside click
-  useEffect(() => {
-    if (!exportMenuOpen) return;
-    function onPointerDown(e: PointerEvent) {
-      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
-        setExportMenuOpen(false);
-      }
-    }
-    window.addEventListener("pointerdown", onPointerDown);
-    return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [exportMenuOpen]);
 
   // Close templates popover on outside click
   useEffect(() => {
@@ -2797,17 +2782,6 @@ export default function Chat() {
   // Persist templates changes
   useEffect(() => { saveTemplates(templates); }, [templates]);
 
-  // Close context badge popover on outside click
-  useEffect(() => {
-    if (!contextBadgeOpen) return;
-    function onPointerDown(e: PointerEvent) {
-      if (contextBadgeRef.current && !contextBadgeRef.current.contains(e.target as Node)) {
-        setContextBadgeOpen(false);
-      }
-    }
-    window.addEventListener("pointerdown", onPointerDown);
-    return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [contextBadgeOpen]);
 
   const isEmpty = chat.messages.length === 0;
   // Derived active thread for cost lookup and other render-time reads
@@ -3301,20 +3275,20 @@ export default function Chat() {
         {/* ── Main column ────────────────────────────────────────────────── */}
         <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
 
-          {/* Top bar */}
-          <header className="flex items-center gap-2 px-3 sm:px-4 py-2.5 border-b border-border bg-card shrink-0">
-            {/* Hamburger — mobile only (<768px) */}
+          {/* Top bar — t3-style minimal */}
+          <header className="flex items-center gap-2 px-3 sm:px-4 py-2 border-b border-border bg-card shrink-0">
+            {/* Hamburger — mobile only */}
             <button
               type="button"
               onClick={() => setSidebarOpen((s) => !s)}
               aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-              className="md:hidden rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              className="md:hidden rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shrink-0"
             >
               <Menu className="h-4 w-4" />
             </button>
 
             {/* View toggle pills */}
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 shrink-0">
               <button
                 type="button"
                 onClick={() => setView("chat")}
@@ -3359,223 +3333,41 @@ export default function Chat() {
               </button>
             </div>
 
-            {/* Spacer + auto-save indicator */}
-            <div className="flex-1 flex items-center gap-1.5">
-              {saveState !== "idle" && (
-                <span
-                  className={cn(
-                    "inline-flex items-center gap-1 text-[10px] font-medium transition-opacity duration-300",
-                    saveState === "saving" ? "text-amber-600 animate-pulse" : "text-emerald-600",
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "inline-block h-1.5 w-1.5 rounded-full",
-                      saveState === "saving" ? "bg-amber-500" : "bg-emerald-500",
-                    )}
-                  />
-                  {saveState === "saving" ? "Saving…" : "Saved"}
-                </span>
-              )}
-            </div>
-
-            {/* Model picker — only in chat mode; agent picks its own model */}
-            {view === "chat" && (
-              <div className="flex items-center gap-1">
-                {/* Online status dot */}
-                <span
-                  title={!isOnline ? "Offline" : !lastReqOk ? "Last request failed" : "Connected"}
-                  className={cn(
-                    "inline-block h-2 w-2 rounded-full shrink-0",
-                    !isOnline ? "bg-red-500" : !lastReqOk ? "bg-amber-400" : "bg-emerald-500",
-                  )}
+            {/* Thread title — inline-editable, centered */}
+            {view === "chat" && (() => {
+              const activeThread = threads.find((t) => t.id === activeThreadId);
+              const titleText = activeThread?.title || "New chat";
+              return (
+                <input
+                  type="text"
+                  value={titleText === "New chat" ? "" : titleText}
+                  onChange={(e) => {
+                    if (!activeThreadId) return;
+                    const newTitle = e.target.value;
+                    setThreads((prev) => {
+                      const updated = prev.map((t) =>
+                        t.id === activeThreadId ? { ...t, title: newTitle } : t
+                      );
+                      saveThreadsWithIndicator(updated);
+                      return updated;
+                    });
+                  }}
+                  placeholder="New chat"
+                  aria-label="Thread title"
+                  className="flex-1 min-w-0 bg-transparent text-sm font-medium text-foreground placeholder:text-muted-foreground/40 focus:outline-none text-center truncate px-2"
                 />
-                <ModelPicker value={model} onChange={setModel} onUpgrade={handleUpgrade} tier={tier} />
-                {/* Model info popover */}
-                <div className="relative" ref={modelInfoRef}>
-                  <button
-                    type="button"
-                    onClick={() => setModelInfoOpen((o) => !o)}
-                    title="Model info"
-                    aria-label="Model info"
-                    className={cn(
-                      "inline-flex items-center justify-center h-6 w-6 rounded-md text-xs transition-colors",
-                      modelInfoOpen
-                        ? "text-primary bg-primary/10"
-                        : "text-muted-foreground hover:text-foreground hover:bg-muted",
-                    )}
-                  >
-                    ⓘ
-                  </button>
-                  {modelInfoOpen && (() => {
-                    const selectedModel = MODELS.find((m) => m.id === model);
-                    const costs = MODEL_COSTS[model];
-                    const ctx = MODEL_CONTEXT_WINDOWS[model] ?? DEFAULT_CONTEXT_WINDOW;
-                    const provider = model.startsWith("hf:") ? "Hugging Face" : model.startsWith("fal:") ? "fal.ai" : "Anthropic";
-                    return (
-                      <div className="absolute right-0 top-full mt-1.5 z-50 w-64 rounded-lg border border-border bg-card shadow-lg p-3 space-y-2">
-                        <p className="text-xs font-semibold text-foreground truncate">{selectedModel?.label ?? model}</p>
-                        <div className="space-y-1 text-[11px] text-muted-foreground">
-                          <div className="flex justify-between">
-                            <span>Provider</span>
-                            <span className="text-foreground font-medium">{provider}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span>Context window</span>
-                            <span className="text-foreground font-medium">{ctx.toLocaleString()} tokens</span>
-                          </div>
-                          {costs ? (
-                            <>
-                              <div className="flex justify-between">
-                                <span>Input cost / 1K</span>
-                                <span className="text-foreground font-medium font-mono">
-                                  {costs.in === 0 ? "Free" : `$${(costs.in / 1000).toFixed(5)}`}
-                                </span>
-                              </div>
-                              <div className="flex justify-between">
-                                <span>Output cost / 1K</span>
-                                <span className="text-foreground font-medium font-mono">
-                                  {costs.out === 0 ? "Free" : `$${(costs.out / 1000).toFixed(5)}`}
-                                </span>
-                              </div>
-                            </>
-                          ) : (
-                            <div className="flex justify-between">
-                              <span>Pricing</span>
-                              <span className="text-foreground font-medium">{selectedModel?.pricing ?? "—"}</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </div>
-              </div>
-            )}
+              );
+            })()}
+            {view !== "chat" && <div className="flex-1" />}
 
-            {/* Presets popover — chat mode only */}
+            {/* Model picker — chat mode only */}
             {view === "chat" && (
-              <div className="relative" ref={presetsRef}>
-                <button
-                  type="button"
-                  onClick={() => setPresetsOpen((o) => !o)}
-                  title="Model presets"
-                  aria-label="Model presets"
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors",
-                    presetsOpen
-                      ? "text-primary bg-primary/10"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                  )}
-                >
-                  <BookMarked className="h-3.5 w-3.5" />
-                  <span className="hidden sm:inline text-[11px]">Presets</span>
-                </button>
-                {presetsOpen && (
-                  <div className="absolute right-0 top-full mt-1 z-50 w-56 rounded-lg border border-border bg-card shadow-lg overflow-hidden">
-                    {presets.length === 0 ? (
-                      <p className="px-3 py-2.5 text-xs text-muted-foreground">No presets saved yet.</p>
-                    ) : (
-                      <ul className="max-h-60 overflow-y-auto">
-                        {presets.map((preset) => (
-                          <li key={preset.id} className="group flex items-center gap-1 border-b border-border/40 last:border-b-0">
-                            <button
-                              type="button"
-                              onClick={() => handleApplyPreset(preset)}
-                              className="flex-1 flex flex-col items-start gap-0.5 px-3 py-2 text-left hover:bg-muted transition-colors"
-                            >
-                              <span className="text-xs font-medium text-foreground truncate w-full">{preset.name}</span>
-                              <span className="font-mono text-[10px] text-muted-foreground/60 truncate w-full">{preset.model} · t={preset.temperature.toFixed(1)}</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeletePreset(preset.id)}
-                              aria-label={`Delete preset ${preset.name}`}
-                              className="mr-1.5 rounded p-0.5 text-muted-foreground/40 opacity-0 group-hover:opacity-100 hover:text-destructive transition-colors"
-                            >
-                              <X className="h-3 w-3" />
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <button
-                      type="button"
-                      onClick={handleSavePreset}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground hover:text-foreground hover:bg-muted border-t border-border/40 transition-colors"
-                    >
-                      <Check className="h-3 w-3" />
-                      Save current as preset
-                    </button>
-                  </div>
-                )}
-              </div>
+              <ModelPicker value={model} onChange={setModel} onUpgrade={handleUpgrade} tier={tier} />
             )}
 
-            {/* Memory indicator + toggle — only in chat mode */}
-            {jwt && view === "chat" && (
-              <button
-                type="button"
-                onClick={() => setMemoryDrawerOpen((o) => !o)}
-                title="Memory panel"
-                aria-label="Toggle memory panel"
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs transition-colors",
-                  memoryActive
-                    ? "text-primary bg-primary/10 hover:bg-primary/15"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                )}
-              >
-                <Brain className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline text-[11px]">
-                  {memoryActive ? "Memory on" : "Memory"}
-                </span>
-              </button>
-            )}
-
-            {/* Share button — signed-in + chat mode + has messages only */}
+            {/* Settings overflow popover */}
             {view === "chat" && (
-              jwt ? (
-                shareStatus === "copied" ? (
-                  <a
-                    href={`/chat/share/${shareToken}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-primary bg-primary/10 hover:bg-primary/15 transition-colors"
-                  >
-                    <Share2 className="h-3.5 w-3.5" />
-                    <span className="hidden sm:inline text-[11px]">Copied!</span>
-                  </a>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleShare}
-                    disabled={shareStatus === "sharing" || chat.messages.length === 0}
-                    title={chat.messages.length === 0 ? "Start a conversation to share" : "Share this conversation"}
-                    className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40"
-                  >
-                    <Share2 className="h-3.5 w-3.5" />
-                    <span className="hidden sm:inline text-[11px]">
-                      {shareStatus === "sharing" ? "Sharing…" : "Share"}
-                    </span>
-                  </button>
-                )
-              ) : (
-                <button
-                  type="button"
-                  disabled
-                  title="Sign in to share"
-                  className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground/40 cursor-not-allowed"
-                >
-                  <Share2 className="h-3.5 w-3.5" />
-                  <span className="hidden sm:inline text-[11px]">Share</span>
-                </button>
-              )
-            )}
-
-            {/* Export / Import menu — chat mode; always visible (import doesn't need messages) */}
-            {view === "chat" && (
-              <div className="relative" ref={exportMenuRef}>
+              <div className="relative shrink-0" ref={settingsRef}>
                 {/* Hidden file input for import */}
                 <input
                   ref={importInputRef}
@@ -3590,174 +3382,431 @@ export default function Chat() {
                 />
                 <button
                   type="button"
-                  onClick={() => setExportMenuOpen((o) => !o)}
-                  title="Export or import conversation"
+                  onClick={() => setSettingsOpen((o) => !o)}
+                  title="Settings"
+                  aria-label="Chat settings"
                   className={cn(
-                    "inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs transition-colors",
-                    exportMenuOpen
+                    "inline-flex items-center justify-center h-7 w-7 rounded-md transition-colors",
+                    settingsOpen
                       ? "text-primary bg-primary/10"
                       : "text-muted-foreground hover:text-foreground hover:bg-muted"
                   )}
                 >
-                  <Download className="h-3.5 w-3.5" />
-                  <span className="hidden sm:inline text-[11px]">Export</span>
-                  <ChevronDown className="h-3 w-3 opacity-60" />
+                  <Settings2 className="h-4 w-4" />
                 </button>
-                {exportMenuOpen && (
-                  <div className="absolute right-0 top-full mt-1 z-50 w-52 rounded-lg border border-border bg-card shadow-lg overflow-hidden">
-                    <button
-                      type="button"
-                      onClick={handleExportThread}
-                      disabled={chat.messages.length === 0}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted transition-colors disabled:opacity-40"
-                    >
-                      <Download className="h-3.5 w-3.5 text-muted-foreground" />
-                      Export as Markdown
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleExportJSON}
-                      disabled={chat.messages.length === 0}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted transition-colors disabled:opacity-40 border-t border-border/40"
-                    >
-                      <Download className="h-3.5 w-3.5 text-muted-foreground" />
-                      Export as JSON
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => importInputRef.current?.click()}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted transition-colors border-t border-border/40"
-                    >
-                      <Upload className="h-3.5 w-3.5 text-muted-foreground" />
-                      Import JSON
-                    </button>
+
+                {settingsOpen && (
+                  <div className="absolute right-0 top-full mt-1.5 z-50 w-64 rounded-xl border border-border bg-card shadow-xl overflow-hidden">
+
+                    {/* Templates section */}
+                    <div className="px-3 pt-3 pb-1">
+                      <p className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground/50 mb-1.5">Templates</p>
+                      <div className="relative" ref={templatesRef}>
+                        <button
+                          type="button"
+                          onClick={() => { setTemplatesOpen((o) => !o); setTemplateEditOpen(false); }}
+                          className={cn(
+                            "w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors text-left",
+                            templatesOpen ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                          )}
+                        >
+                          <Layout className="h-3.5 w-3.5 shrink-0" />
+                          Prompt templates
+                        </button>
+                        {templatesOpen && (
+                          <div className="mt-1 rounded-lg border border-border bg-card shadow-md overflow-hidden">
+                            {!templateEditOpen ? (
+                              <>
+                                <div className="flex items-center justify-between px-3 py-2 border-b border-border/60">
+                                  <span className="text-[11px] font-semibold text-foreground/70 uppercase tracking-wide">Templates</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setTemplateDraft({ id: "", name: "", content: "" }); setTemplateEditOpen(true); }}
+                                    className="text-[11px] text-primary hover:opacity-80 transition-opacity"
+                                  >+ New</button>
+                                </div>
+                                <div className="max-h-44 overflow-y-auto">
+                                  {templates.map((t) => (
+                                    <div key={t.id} className="group flex items-center gap-1 border-b border-border/30 last:border-b-0">
+                                      <button
+                                        type="button"
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+                                          const applied = applyTemplate(t.content, input);
+                                          setInput(applied);
+                                          setTemplatesOpen(false);
+                                          setSettingsOpen(false);
+                                          setTimeout(() => textareaRef.current?.focus(), 0);
+                                        }}
+                                        className="flex-1 text-left px-3 py-2 hover:bg-muted/60 transition-colors"
+                                      >
+                                        <p className="text-xs font-medium text-foreground truncate">{t.name}</p>
+                                        <p className="text-[10px] text-muted-foreground truncate">{t.content.slice(0, 48)}{t.content.length > 48 ? "…" : ""}</p>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => { setTemplateDraft(t); setTemplateEditOpen(true); }}
+                                        className="opacity-0 group-hover:opacity-100 mr-2 text-muted-foreground/60 hover:text-foreground transition-all"
+                                        title="Edit template"
+                                      >
+                                        <Pencil className="h-3 w-3" />
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              </>
+                            ) : (
+                              <div className="p-3 flex flex-col gap-2">
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-[11px] font-semibold text-foreground/70 uppercase tracking-wide">
+                                    {templateDraft.id ? "Edit" : "New"} Template
+                                  </span>
+                                  <button type="button" onClick={() => setTemplateEditOpen(false)} className="text-muted-foreground/60 hover:text-foreground">
+                                    <X className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                                <input
+                                  type="text"
+                                  placeholder="Template name"
+                                  value={templateDraft.name}
+                                  onChange={(e) => setTemplateDraft((d) => ({ ...d, name: e.target.value }))}
+                                  className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50"
+                                />
+                                <textarea
+                                  placeholder={"Template text… use {{selection}} to insert current input"}
+                                  value={templateDraft.content}
+                                  onChange={(e) => setTemplateDraft((d) => ({ ...d, content: e.target.value }))}
+                                  rows={3}
+                                  className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50 resize-none"
+                                />
+                                <div className="flex gap-1 justify-end">
+                                  {templateDraft.id && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setTemplates((ts) => ts.filter((t) => t.id !== templateDraft.id));
+                                        setTemplateEditOpen(false);
+                                      }}
+                                      className="rounded px-2 py-1 text-[11px] text-destructive/70 hover:text-destructive hover:bg-destructive/10 transition-colors"
+                                    >Delete</button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    disabled={!templateDraft.name.trim() || !templateDraft.content.trim()}
+                                    onClick={() => {
+                                      if (!templateDraft.name.trim() || !templateDraft.content.trim()) return;
+                                      if (templateDraft.id) {
+                                        setTemplates((ts) => ts.map((t) => t.id === templateDraft.id ? templateDraft : t));
+                                      } else {
+                                        setTemplates((ts) => [...ts, { ...templateDraft, id: crypto.randomUUID() }]);
+                                      }
+                                      setTemplateEditOpen(false);
+                                    }}
+                                    className="rounded px-2 py-1 text-[11px] bg-primary text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-40"
+                                  >Save</button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Presets section */}
+                    <div className="px-3 pb-1">
+                      <div className="relative" ref={presetsRef}>
+                        <button
+                          type="button"
+                          onClick={() => setPresetsOpen((o) => !o)}
+                          className={cn(
+                            "w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors text-left",
+                            presetsOpen ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                          )}
+                        >
+                          <BookMarked className="h-3.5 w-3.5 shrink-0" />
+                          Model presets
+                        </button>
+                        {presetsOpen && (
+                          <div className="mt-1 rounded-lg border border-border bg-card shadow-md overflow-hidden">
+                            {presets.length === 0 ? (
+                              <p className="px-3 py-2.5 text-xs text-muted-foreground">No presets saved yet.</p>
+                            ) : (
+                              <ul className="max-h-44 overflow-y-auto">
+                                {presets.map((preset) => (
+                                  <li key={preset.id} className="group flex items-center gap-1 border-b border-border/40 last:border-b-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleApplyPreset(preset)}
+                                      className="flex-1 flex flex-col items-start gap-0.5 px-3 py-2 text-left hover:bg-muted transition-colors"
+                                    >
+                                      <span className="text-xs font-medium text-foreground truncate w-full">{preset.name}</span>
+                                      <span className="font-mono text-[10px] text-muted-foreground/60 truncate w-full">{preset.model} · t={preset.temperature.toFixed(1)}</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeletePreset(preset.id)}
+                                      aria-label={`Delete preset ${preset.name}`}
+                                      className="mr-1.5 rounded p-0.5 text-muted-foreground/40 opacity-0 group-hover:opacity-100 hover:text-destructive transition-colors"
+                                    >
+                                      <X className="h-3 w-3" />
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                            <button
+                              type="button"
+                              onClick={handleSavePreset}
+                              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground hover:text-foreground hover:bg-muted border-t border-border/40 transition-colors"
+                            >
+                              <Check className="h-3 w-3" />
+                              Save current as preset
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="h-px bg-border/50 mx-3 my-1" />
+
+                    {/* Temperature */}
+                    <div className="px-3 py-2">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <Thermometer className="h-3.5 w-3.5" />
+                          Temperature
+                        </span>
+                        <span className="font-mono text-[11px] text-primary/70">{temperature.toFixed(1)}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-muted-foreground/50 shrink-0">Precise</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={1.5}
+                          step={0.1}
+                          value={temperature}
+                          onChange={(e) => setTemperature(parseFloat(e.target.value))}
+                          className="flex-1 accent-primary h-1"
+                          aria-label="Temperature"
+                        />
+                        <span className="text-[10px] text-muted-foreground/50 shrink-0">Creative</span>
+                      </div>
+                    </div>
+
+                    <div className="h-px bg-border/50 mx-3 my-1" />
+
+                    {/* Dry-run toggle */}
+                    <div className="px-3 py-1">
+                      <button
+                        type="button"
+                        onClick={() => setDryRun((v) => !v)}
+                        aria-pressed={dryRun}
+                        className="w-full flex items-center justify-between rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-muted"
+                      >
+                        <span className="flex items-center gap-2 text-muted-foreground">
+                          {dryRun ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                          Dry-run mode
+                        </span>
+                        <span className={cn(
+                          "text-[10px] font-medium px-1.5 py-0.5 rounded",
+                          dryRun ? "bg-amber-100 text-amber-700" : "text-muted-foreground/40"
+                        )}>
+                          {dryRun ? "ON" : "OFF"}
+                        </span>
+                      </button>
+                    </div>
+
+                    {/* System prompt */}
+                    <div className="px-3 pb-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const t = threads.find((t) => t.id === activeThreadId);
+                          setSystemPromptDraft(t?.systemPrompt ?? "");
+                          setSystemPromptOpen((o) => !o);
+                          setSettingsOpen(false);
+                        }}
+                        className={cn(
+                          "w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors text-left",
+                          threads.find((t) => t.id === activeThreadId)?.systemPrompt?.trim()
+                            ? "text-primary bg-primary/5 hover:bg-primary/10"
+                            : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                        )}
+                      >
+                        <Terminal className="h-3.5 w-3.5 shrink-0" />
+                        System prompt
+                        {threads.find((t) => t.id === activeThreadId)?.systemPrompt?.trim() && (
+                          <span className="ml-auto text-[9px] text-primary/60 font-mono">set</span>
+                        )}
+                      </button>
+                    </div>
+
+                    <div className="h-px bg-border/50 mx-3 my-1" />
+
+                    {/* Search + Share */}
+                    <div className="px-3 py-1 space-y-0.5">
+                      <button
+                        type="button"
+                        onClick={() => { setGlobalSearchOpen(true); setSettingsOpen(false); }}
+                        className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors text-left"
+                      >
+                        <SearchCode className="h-3.5 w-3.5 shrink-0" />
+                        Search threads
+                        <kbd className="ml-auto font-mono text-[9px] text-muted-foreground/40">⌘⇧F</kbd>
+                      </button>
+                      {jwt ? (
+                        shareStatus === "copied" ? (
+                          <a
+                            href={`/chat/share/${shareToken}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-primary bg-primary/5 hover:bg-primary/10 transition-colors"
+                          >
+                            <Share2 className="h-3.5 w-3.5 shrink-0" />
+                            Link copied — open →
+                          </a>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => { handleShare(); setSettingsOpen(false); }}
+                            disabled={shareStatus === "sharing" || chat.messages.length === 0}
+                            className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 text-left"
+                          >
+                            <Share2 className="h-3.5 w-3.5 shrink-0" />
+                            {shareStatus === "sharing" ? "Sharing…" : "Share thread"}
+                          </button>
+                        )
+                      ) : null}
+                    </div>
+
+                    {/* Context window info */}
+                    {contextStats !== null && (
+                      <div className="px-3 pb-2">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[10px] text-muted-foreground/60">Context window</span>
+                          <span className={cn(
+                            "font-mono text-[10px]",
+                            contextStats.pct >= 0.8 ? "text-destructive" : contextStats.pct >= 0.5 ? "text-amber-600" : "text-muted-foreground/60"
+                          )}>
+                            ~{contextStats.totalTokens >= 1000 ? `${(contextStats.totalTokens / 1000).toFixed(0)}k` : contextStats.totalTokens}
+                            {" / "}
+                            {contextStats.windowSize >= 1000 ? `${(contextStats.windowSize / 1000).toFixed(0)}k` : contextStats.windowSize}
+                          </span>
+                        </div>
+                        <div className="h-1 w-full rounded-full bg-muted overflow-hidden">
+                          <div
+                            className={cn(
+                              "h-full rounded-full transition-all",
+                              contextStats.pct >= 0.8 ? "bg-destructive" : contextStats.pct >= 0.5 ? "bg-amber-500" : "bg-primary"
+                            )}
+                            style={{ width: `${Math.min(100, contextStats.pct * 100).toFixed(1)}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="h-px bg-border/50 mx-3 my-1" />
+
+                    {/* Export / Import */}
+                    <div className="px-3 py-1 space-y-0.5">
+                      <p className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground/50 px-2 pb-0.5">Export / Import</p>
+                      <button
+                        type="button"
+                        onClick={() => { handleExportThread(); setSettingsOpen(false); }}
+                        disabled={chat.messages.length === 0}
+                        className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 text-left"
+                      >
+                        <Download className="h-3.5 w-3.5 shrink-0" />
+                        Export as Markdown
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { handleExportJSON(); setSettingsOpen(false); }}
+                        disabled={chat.messages.length === 0}
+                        className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 text-left"
+                      >
+                        <Download className="h-3.5 w-3.5 shrink-0" />
+                        Export as JSON
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { importInputRef.current?.click(); setSettingsOpen(false); }}
+                        className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors text-left"
+                      >
+                        <Upload className="h-3.5 w-3.5 shrink-0" />
+                        Import JSON
+                      </button>
+                    </div>
+
+                    {/* BYOK + Skin + Memory */}
+                    <div className="h-px bg-border/50 mx-3 my-1" />
+                    <div className="px-3 py-1 pb-2 space-y-0.5">
+                      <button
+                        type="button"
+                        onClick={() => { setByokOpen(true); setSettingsOpen(false); }}
+                        className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors text-left"
+                      >
+                        <Key className="h-3.5 w-3.5 shrink-0" />
+                        API keys (BYOK)
+                      </button>
+                      {jwt && (
+                        <button
+                          type="button"
+                          onClick={() => { setMemoryDrawerOpen((o) => !o); setSettingsOpen(false); }}
+                          className={cn(
+                            "w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors text-left",
+                            memoryActive ? "text-primary bg-primary/5 hover:bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                          )}
+                        >
+                          <Brain className="h-3.5 w-3.5 shrink-0" />
+                          Memory {memoryActive ? "(active)" : ""}
+                        </button>
+                      )}
+                      <div className="flex items-center gap-2 px-2 py-1.5">
+                        <span className="text-xs text-muted-foreground flex-1">Theme skin</span>
+                        <SkinPicker skin={skin} onChange={setSkin} />
+                      </div>
+                      {jwt && tier !== "pro" && (
+                        <button
+                          type="button"
+                          onClick={() => { handleUpgrade(); setSettingsOpen(false); }}
+                          disabled={upgrading}
+                          className="w-full flex items-center gap-2 rounded-full bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-50 mt-1"
+                        >
+                          <Crown className="h-3 w-3 shrink-0" />
+                          {upgrading ? "Redirecting…" : "Upgrade to Pro · $7/mo"}
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
             )}
 
-            {/* Context window badge — chat mode + has messages */}
-            {view === "chat" && contextStats !== null && (
-              <div className="relative" ref={contextBadgeRef}>
+            {/* Non-chat views: keep BYOK + skin accessible */}
+            {view !== "chat" && (
+              <>
                 <button
                   type="button"
-                  onClick={() => setContextBadgeOpen((o) => !o)}
-                  title="Context window usage"
-                  className={cn(
-                    "inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-mono transition-colors hover:bg-muted",
-                    contextStats.pct >= 0.8
-                      ? "text-destructive"
-                      : contextStats.pct >= 0.5
-                      ? "text-amber-600"
-                      : "text-muted-foreground"
-                  )}
+                  onClick={() => setByokOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
                 >
-                  ~{contextStats.totalTokens >= 1000
-                    ? `${(contextStats.totalTokens / 1000).toFixed(0)}k`
-                    : contextStats.totalTokens}
-                  {" / "}
-                  {contextStats.windowSize >= 1000
-                    ? `${(contextStats.windowSize / 1000).toFixed(0)}k`
-                    : contextStats.windowSize}
+                  <Key className="h-3.5 w-3.5" />
                 </button>
-                {contextBadgeOpen && (
-                  <div className="absolute right-0 top-full mt-1 z-50 w-64 rounded-lg border border-border bg-card shadow-lg p-3 space-y-1.5">
-                    <p className="text-[11px] font-medium text-foreground mb-2">Context window usage</p>
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-muted-foreground">Messages</span>
-                      <span className="font-mono text-foreground">~{contextStats.msgTokens.toLocaleString()} tokens</span>
-                    </div>
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-muted-foreground">System prompt</span>
-                      <span className="font-mono text-foreground">~{contextStats.sysTokens.toLocaleString()} tokens</span>
-                    </div>
-                    <div className="h-px bg-border/60 my-1" />
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-muted-foreground">Total used</span>
-                      <span className={cn(
-                        "font-mono font-medium",
-                        contextStats.pct >= 0.8 ? "text-destructive" : contextStats.pct >= 0.5 ? "text-amber-600" : "text-foreground"
-                      )}>
-                        ~{contextStats.totalTokens.toLocaleString()} / {contextStats.windowSize.toLocaleString()}
-                      </span>
-                    </div>
-                    <div className="mt-2 h-1.5 w-full rounded-full bg-muted overflow-hidden">
-                      <div
-                        className={cn(
-                          "h-full rounded-full transition-all",
-                          contextStats.pct >= 0.8 ? "bg-destructive" : contextStats.pct >= 0.5 ? "bg-amber-500" : "bg-primary"
-                        )}
-                        style={{ width: `${Math.min(100, contextStats.pct * 100).toFixed(1)}%` }}
-                      />
-                    </div>
-                    <p className="text-[10px] text-muted-foreground/60 pt-0.5">
-                      {(contextStats.pct * 100).toFixed(1)}% used · estimate via chars / 3.3
-                    </p>
-                  </div>
+                <SkinPicker skin={skin} onChange={setSkin} />
+                {jwt && tier !== "pro" && (
+                  <button
+                    type="button"
+                    onClick={handleUpgrade}
+                    disabled={upgrading}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-50"
+                  >
+                    <Crown className="h-3 w-3" />
+                    <span className="hidden sm:inline">{upgrading ? "Redirecting…" : "$7/mo"}</span>
+                  </button>
                 )}
-              </div>
-            )}
-
-            {/* System prompt button — chat mode only */}
-            {view === "chat" && (
-              <button
-                type="button"
-                onClick={() => {
-                  const t = threads.find((t) => t.id === activeThreadId);
-                  setSystemPromptDraft(t?.systemPrompt ?? "");
-                  setSystemPromptOpen((o) => !o);
-                }}
-                title="Per-thread system prompt"
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors",
-                  threads.find((t) => t.id === activeThreadId)?.systemPrompt?.trim()
-                    ? "text-primary bg-primary/10 hover:bg-primary/15"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                )}
-              >
-                <Settings2 className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline text-[11px]">System</span>
-              </button>
-            )}
-
-            {/* Global search */}
-            {view === "chat" && (
-              <button
-                type="button"
-                onClick={() => setGlobalSearchOpen(true)}
-                title="Search all conversations (⌘⇧F)"
-                aria-label="Search all conversations"
-                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-              >
-                <SearchCode className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline text-[11px]">Search</span>
-              </button>
-            )}
-
-            {/* BYOK keys */}
-            <button
-              type="button"
-              onClick={() => setByokOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-            >
-              <Key className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline text-[11px]">Keys</span>
-            </button>
-
-            {/* Skin picker — Palette icon, always visible */}
-            <SkinPicker skin={skin} onChange={setSkin} />
-
-            {/* Upgrade — only for free signed-in users */}
-            {jwt && tier !== "pro" && (
-              <button
-                type="button"
-                onClick={handleUpgrade}
-                disabled={upgrading}
-                className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-50"
-              >
-                <Crown className="h-3 w-3" />
-                <span className="hidden sm:inline">{upgrading ? "Redirecting…" : "$7/mo"}</span>
-              </button>
+              </>
             )}
           </header>
 
@@ -3918,7 +3967,7 @@ export default function Chat() {
                           model={model}
                           temperature={temperature}
                           jwt={jwt}
-                          onOpenTemp={() => setTempSliderOpen((o) => !o)}
+                          onOpenSettings={() => setSettingsOpen((o) => !o)}
                         />
                       ) : (
                         <div className="flex flex-col gap-6">
@@ -4350,13 +4399,13 @@ export default function Chat() {
                   </div>
                 )}
 
-                {/* Sticky composer */}
-                <div className="shrink-0 border-t border-border bg-card px-4 py-3">
+                {/* Sticky composer — t3-style centered card */}
+                <div className="shrink-0 bg-background px-4 py-3">
                   {/* Usage indicator — signed-in users only */}
                   {userId && todayMsgCount !== null && (
-                    <div className="mx-auto max-w-2xl mb-2 flex items-center gap-1.5">
-                      <span className="font-mono text-[10px] text-muted-foreground/60">
-                        {todayMsgCount}/{dailyMsgLimit} messages today
+                    <div className="mx-auto max-w-3xl mb-1.5 flex items-center gap-1.5">
+                      <span className="font-mono text-[10px] text-muted-foreground/50">
+                        {todayMsgCount}/{dailyMsgLimit} today
                       </span>
                       {todayMsgCount >= dailyMsgLimit && (
                         <span className="text-[10px] text-destructive/70">· limit reached</span>
@@ -4364,79 +4413,18 @@ export default function Chat() {
                     </div>
                   )}
 
-                  {/* Temperature slider — collapsed by default */}
-                  <div className="mx-auto max-w-2xl mb-2">
-                    <button
-                      type="button"
-                      onClick={() => setTempSliderOpen((o) => !o)}
-                      className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-                      title="Adjust creativity / temperature"
-                    >
-                      <Thermometer className="h-3 w-3" />
-                      <span>{temperature.toFixed(1)}</span>
-                    </button>
-                    {tempSliderOpen && (
-                      <div className="mt-1 flex items-center gap-3 px-1">
-                        <span className="text-[10px] text-muted-foreground/50 shrink-0">Precise</span>
-                        <input
-                          type="range"
-                          min={0}
-                          max={1.5}
-                          step={0.1}
-                          value={temperature}
-                          onChange={(e) => setTemperature(parseFloat(e.target.value))}
-                          className="flex-1 accent-primary h-1"
-                          aria-label="Temperature"
-                        />
-                        <span className="text-[10px] text-muted-foreground/50 shrink-0">Creative</span>
-                        <span className="font-mono text-[10px] text-primary/70 w-6 text-right shrink-0">{temperature.toFixed(1)}</span>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Pending image thumbnails — shown above composer when images are queued */}
-                  {pendingImages.length > 0 && (
-                    <div className="mx-auto max-w-2xl mb-2 flex flex-wrap gap-2">
-                      {pendingImages.map((img, idx) => (
-                        <div key={idx} className="relative group">
-                          <img
-                            src={img.dataUrl}
-                            alt={img.name}
-                            className="h-16 w-16 rounded-md object-cover border border-border"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => removePendingImage(idx)}
-                            aria-label={`Remove ${img.name}`}
-                            className="absolute -top-1.5 -right-1.5 h-4 w-4 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            <X className="h-2.5 w-2.5" />
-                          </button>
-                        </div>
-                      ))}
-                      {visionBlockedByTier && (
-                        <div className="flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/8 px-2 py-1 text-xs text-foreground self-center">
-                          <Crown className="h-3 w-3 text-primary" />
-                          <span>Vision is a <button type="button" onClick={handleUpgrade} className="underline underline-offset-2 text-primary hover:opacity-80 transition-opacity">Pro feature</button></span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-
-                  {/* Slash command autocomplete — shown above composer when input starts with / */}
+                  {/* Slash command autocomplete */}
                   {slashOpen && (() => {
                     const partial = input.slice(1).toLowerCase();
                     const filtered = SLASH_COMMANDS.filter((c) => c.trigger.slice(1).startsWith(partial));
                     if (filtered.length === 0) return null;
                     return (
-                      <div className="mx-auto max-w-2xl mb-1 rounded-lg border border-border bg-card shadow-md overflow-hidden">
+                      <div className="mx-auto max-w-3xl mb-1 rounded-lg border border-border bg-card shadow-md overflow-hidden">
                         {filtered.map((cmd, i) => (
                           <button
                             key={cmd.trigger}
                             type="button"
                             onMouseDown={(e) => {
-                              // mousedown so we beat the textarea blur
                               e.preventDefault();
                               setInput(cmd.text);
                               setSlashOpen(false);
@@ -4455,11 +4443,11 @@ export default function Chat() {
                     );
                   })()}
 
+                  {/* Composer card */}
                   <form
                     onSubmit={(e) => {
                       e.preventDefault();
                       if (slashOpen) {
-                        // Accept the first filtered slash command rather than submitting raw input.
                         const partial = input.slice(1).toLowerCase();
                         const filtered = SLASH_COMMANDS.filter((c) => c.trigger.slice(1).startsWith(partial));
                         if (filtered.length > 0) {
@@ -4467,7 +4455,6 @@ export default function Chat() {
                           setSlashOpen(false);
                           return;
                         }
-                        // Zero matches — close dropdown and fall through to normal submit.
                         setSlashOpen(false);
                       }
                       if (!input.trim()) return;
@@ -4477,13 +4464,43 @@ export default function Chat() {
                       setInput("");
                       setSlashOpen(false);
                     }}
-                    className="mx-auto flex max-w-2xl items-end gap-2 rounded-xl border border-border bg-background px-3 py-2.5 shadow-sm focus-within:border-primary/50 transition-colors"
+                    className="relative mx-auto max-w-3xl rounded-2xl border border-border bg-card shadow-sm focus-within:border-primary/40 transition-colors overflow-hidden"
                   >
+                    {/* Pending image chips — above textarea, only when present */}
+                    {pendingImages.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
+                        {pendingImages.map((img, idx) => (
+                          <div key={idx} className="relative group">
+                            <img
+                              src={img.dataUrl}
+                              alt={img.name}
+                              className="h-12 w-12 rounded-lg object-cover border border-border"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => removePendingImage(idx)}
+                              aria-label={`Remove ${img.name}`}
+                              className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              <X className="h-2.5 w-2.5" />
+                            </button>
+                          </div>
+                        ))}
+                        {visionBlockedByTier && (
+                          <div className="flex items-center gap-1 rounded-md border border-primary/30 bg-primary/8 px-2 py-1 text-xs text-foreground self-center">
+                            <Crown className="h-3 w-3 text-primary shrink-0" />
+                            <span>Vision is a <button type="button" onClick={handleUpgrade} className="underline underline-offset-2 text-primary hover:opacity-80 transition-opacity">Pro feature</button></span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Textarea — no border, card carries it */}
                     <textarea
                       ref={textareaRef}
                       disabled={summarizing}
-                      className="flex-1 resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none disabled:opacity-50 leading-relaxed max-h-40"
-                      placeholder={summarizing ? "Summarizing earlier messages…" : MODELS.find((m) => m.id === model)?.modality === "image" ? "Describe an image…" : "Message Tag… (type / for commands)"}
+                      className="w-full resize-none bg-transparent px-4 pt-3 pb-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none disabled:opacity-50 leading-relaxed max-h-40"
+                      placeholder={summarizing ? "Summarizing earlier messages…" : MODELS.find((m) => m.id === model)?.modality === "image" ? "Describe an image…" : "Message Tag…"}
                       rows={1}
                       value={input}
                       onChange={(e) => {
@@ -4491,11 +4508,9 @@ export default function Chat() {
                         setInput(val);
                         e.target.style.height = "auto";
                         e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
-                        // Show slash command dropdown when input starts with / and has no spaces yet
                         setSlashOpen(val.startsWith("/") && !val.includes(" "));
                       }}
                       onKeyDown={(e) => {
-                        // Tab or Enter to insert slash command
                         if (slashOpen && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
                           const partial = input.slice(1).toLowerCase();
                           const filtered = SLASH_COMMANDS.filter((c) => c.trigger.slice(1).startsWith(partial));
@@ -4506,7 +4521,6 @@ export default function Chat() {
                             return;
                           }
                         }
-                        // Esc to close slash dropdown
                         if (e.key === "Escape" && slashOpen) {
                           e.preventDefault();
                           setSlashOpen(false);
@@ -4523,169 +4537,80 @@ export default function Chat() {
                         }
                       }}
                     />
-                    <div className="flex items-center gap-1 shrink-0">
-                      {/* Templates button */}
-                      <div className="relative" ref={templatesRef}>
-                        <button
-                          type="button"
-                          onClick={() => { setTemplatesOpen((o) => !o); setTemplateEditOpen(false); }}
-                          title="Prompt templates"
-                          aria-label="Prompt templates"
-                          className={cn(
-                            "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
-                            templatesOpen
-                              ? "bg-primary/15 text-primary"
-                              : "text-muted-foreground/60 hover:text-foreground hover:bg-muted"
-                          )}
-                        >
-                          <Layout className="h-4 w-4" />
-                        </button>
-                        {templatesOpen && (
-                          <div className="absolute bottom-10 right-0 z-50 w-64 rounded-xl border border-border bg-card shadow-lg overflow-hidden">
-                            {!templateEditOpen ? (
-                              <>
-                                <div className="flex items-center justify-between px-3 py-2 border-b border-border/60">
-                                  <span className="text-[11px] font-semibold text-foreground/70 uppercase tracking-wide">Templates</span>
-                                  <button
-                                    type="button"
-                                    onClick={() => { setTemplateDraft({ id: "", name: "", content: "" }); setTemplateEditOpen(true); }}
-                                    className="text-[11px] text-primary hover:opacity-80 transition-opacity"
-                                  >+ New</button>
-                                </div>
-                                <div className="max-h-52 overflow-y-auto">
-                                  {templates.map((t) => (
-                                    <div key={t.id} className="group flex items-center gap-1 border-b border-border/30 last:border-b-0">
-                                      <button
-                                        type="button"
-                                        onMouseDown={(e) => {
-                                          e.preventDefault();
-                                          const applied = applyTemplate(t.content, input);
-                                          setInput(applied);
-                                          setTemplatesOpen(false);
-                                          setTimeout(() => textareaRef.current?.focus(), 0);
-                                        }}
-                                        className="flex-1 text-left px-3 py-2 hover:bg-muted/60 transition-colors"
-                                      >
-                                        <p className="text-xs font-medium text-foreground truncate">{t.name}</p>
-                                        <p className="text-[10px] text-muted-foreground truncate">{t.content.slice(0, 48)}{t.content.length > 48 ? "…" : ""}</p>
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => { setTemplateDraft(t); setTemplateEditOpen(true); }}
-                                        className="opacity-0 group-hover:opacity-100 mr-2 text-muted-foreground/60 hover:text-foreground transition-all"
-                                        title="Edit template"
-                                        aria-label="Edit template"
-                                      >
-                                        <Pencil className="h-3 w-3" />
-                                      </button>
-                                    </div>
-                                  ))}
-                                </div>
-                              </>
-                            ) : (
-                              <div className="p-3 flex flex-col gap-2">
-                                <div className="flex items-center justify-between mb-1">
-                                  <span className="text-[11px] font-semibold text-foreground/70 uppercase tracking-wide">
-                                    {templateDraft.id ? "Edit" : "New"} Template
-                                  </span>
-                                  <button type="button" onClick={() => setTemplateEditOpen(false)} className="text-muted-foreground/60 hover:text-foreground">
-                                    <X className="h-3.5 w-3.5" />
-                                  </button>
-                                </div>
-                                <input
-                                  type="text"
-                                  placeholder="Template name"
-                                  value={templateDraft.name}
-                                  onChange={(e) => setTemplateDraft((d) => ({ ...d, name: e.target.value }))}
-                                  className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50"
-                                />
-                                <textarea
-                                  placeholder={"Template text… use {{selection}} to insert current input"}
-                                  value={templateDraft.content}
-                                  onChange={(e) => setTemplateDraft((d) => ({ ...d, content: e.target.value }))}
-                                  rows={4}
-                                  className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50 resize-none"
-                                />
-                                <div className="flex gap-1 justify-end">
-                                  {templateDraft.id && (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setTemplates((ts) => ts.filter((t) => t.id !== templateDraft.id));
-                                        setTemplateEditOpen(false);
-                                      }}
-                                      className="rounded px-2 py-1 text-[11px] text-destructive/70 hover:text-destructive hover:bg-destructive/10 transition-colors"
-                                    >Delete</button>
-                                  )}
-                                  <button
-                                    type="button"
-                                    disabled={!templateDraft.name.trim() || !templateDraft.content.trim()}
-                                    onClick={() => {
-                                      if (!templateDraft.name.trim() || !templateDraft.content.trim()) return;
-                                      if (templateDraft.id) {
-                                        setTemplates((ts) => ts.map((t) => t.id === templateDraft.id ? templateDraft : t));
-                                      } else {
-                                        setTemplates((ts) => [...ts, { ...templateDraft, id: crypto.randomUUID() }]);
-                                      }
-                                      setTemplateEditOpen(false);
-                                    }}
-                                    className="rounded px-2 py-1 text-[11px] bg-primary text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-40"
-                                  >Save</button>
-                                </div>
-                              </div>
+
+                    {/* Bottom row — left: paperclip + mic, right: stop/send */}
+                    <div className="flex items-center justify-between px-3 pb-2.5">
+                      <div className="flex items-center gap-1">
+                        <FileDropzone
+                          jwt={jwt}
+                          tier={tier}
+                          onIngested={handleFileIngested}
+                          onImageAttached={handleImageAttached}
+                        />
+                        <MicButton
+                          onTranscript={(text) => setInput((prev) => prev ? `${prev} ${text}` : text)}
+                          byokKey={byokKeys?.["openai"]}
+                        />
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        {/* Offline dot — red only when offline, hidden when connected */}
+                        {(!isOnline || !lastReqOk) && (
+                          <span
+                            title={!isOnline ? "Offline" : "Last request failed"}
+                            className={cn(
+                              "inline-block h-1.5 w-1.5 rounded-full shrink-0",
+                              !isOnline ? "bg-red-500" : "bg-amber-400"
                             )}
-                          </div>
+                          />
+                        )}
+                        {/* Save dot — pulses during save, fades when idle */}
+                        {saveState !== "idle" && (
+                          <span
+                            className={cn(
+                              "inline-block h-1.5 w-1.5 rounded-full shrink-0 transition-opacity",
+                              saveState === "saving" ? "bg-primary animate-pulse" : "bg-primary/30"
+                            )}
+                            title={saveState === "saving" ? "Saving…" : "Saved"}
+                          />
+                        )}
+                        {(chat.status === "streaming" || chat.status === "submitted") ? (
+                          <button
+                            type="button"
+                            onClick={() => chat.stop()}
+                            className="flex h-7 w-7 items-center justify-center rounded-lg bg-foreground/10 text-foreground hover:bg-foreground/15 transition-colors"
+                            aria-label="Stop generation"
+                            title="Stop generation"
+                          >
+                            <Square className="h-3.5 w-3.5" fill="currentColor" />
+                          </button>
+                        ) : (
+                          <button
+                            type="submit"
+                            disabled={!canSend}
+                            className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-opacity disabled:opacity-30 hover:opacity-90"
+                            aria-label="Send message"
+                          >
+                            <Send className="h-3.5 w-3.5" />
+                          </button>
                         )}
                       </div>
-
-                      {/* Dry-run toggle */}
-                      <button
-                        type="button"
-                        onClick={() => setDryRun((v) => !v)}
-                        title={dryRun ? "Dry run ON — click to disable" : "Dry run OFF — click to enable"}
-                        aria-label="Toggle dry-run mode"
-                        aria-pressed={dryRun}
-                        className={cn(
-                          "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
-                          dryRun
-                            ? "bg-amber-100 text-amber-600 dark:bg-amber-900/40 dark:text-amber-400"
-                            : "text-muted-foreground/60 hover:text-foreground hover:bg-muted"
-                        )}
-                      >
-                        {dryRun ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
-                      </button>
-
-                      <FileDropzone
-                        jwt={jwt}
-                        tier={tier}
-                        onIngested={handleFileIngested}
-                        onImageAttached={handleImageAttached}
-                      />
-                      <MicButton
-                        onTranscript={(text) => setInput((prev) => prev ? `${prev} ${text}` : text)}
-                        byokKey={byokKeys?.["openai"]}
-                      />
-                      {(chat.status === "streaming" || chat.status === "submitted") ? (
-                        <button
-                          type="button"
-                          onClick={() => chat.stop()}
-                          className="flex h-8 w-8 items-center justify-center rounded-lg bg-destructive text-destructive-foreground transition-opacity hover:opacity-90"
-                          aria-label="Stop generation"
-                          title="Stop generation"
-                        >
-                          <Square className="h-4 w-4" fill="currentColor" />
-                        </button>
-                      ) : (
-                        <button
-                          type="submit"
-                          disabled={!canSend}
-                          className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-opacity disabled:opacity-30 hover:opacity-90"
-                          aria-label="Send message"
-                        >
-                          <Send className="h-4 w-4" />
-                        </button>
-                      )}
                     </div>
+
+                    {/* Context window hairline progress bar — bottom edge of card */}
+                    {contextStats !== null && contextStats.pct > 0 && (
+                      <div
+                        className="absolute bottom-0 left-0 h-[2px] transition-all duration-500"
+                        style={{
+                          width: `${Math.min(100, contextStats.pct * 100).toFixed(1)}%`,
+                          background: contextStats.pct >= 0.8
+                            ? "hsl(var(--destructive))"
+                            : contextStats.pct >= 0.5
+                            ? "#d97706"
+                            : "hsl(var(--primary) / 0.4)",
+                        }}
+                        title={`~${contextStats.totalTokens.toLocaleString()} / ${contextStats.windowSize.toLocaleString()} tokens`}
+                      />
+                    )}
                   </form>
                 </div>
               </div>

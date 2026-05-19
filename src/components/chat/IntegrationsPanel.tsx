@@ -10,18 +10,15 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, Eye, EyeOff } from "lucide-react";
 import {
-  Calendar,
-  ChevronDown,
-  ChevronRight,
-  Eye,
-  EyeOff,
-  FileText,
-  Github,
-  ListTodo,
-  Mail,
-  MessageSquare,
-} from "lucide-react";
+  GmailIcon,
+  SlackIcon,
+  GitHubIcon,
+  LinearIcon,
+  NotionIcon,
+  GoogleCalendarIcon,
+} from "@/components/icons/brand";
 import { cn } from "@/lib/utils";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
@@ -101,16 +98,16 @@ function formatRelativeTime(isoStr: string | null | undefined): string {
 interface ToolDef {
   slug: string;
   label: string;
-  Icon: React.FC<{ className?: string }>;
+  Icon: React.FC<{ className?: string; size?: number }>;
 }
 
 const TOOLS: ToolDef[] = [
-  { slug: "gmail", label: "Gmail", Icon: Mail },
-  { slug: "slack", label: "Slack", Icon: MessageSquare },
-  { slug: "github", label: "GitHub", Icon: Github },
-  { slug: "linear", label: "Linear", Icon: ListTodo },
-  { slug: "notion", label: "Notion", Icon: FileText },
-  { slug: "googlecalendar", label: "Calendar", Icon: Calendar },
+  { slug: "gmail", label: "Gmail", Icon: GmailIcon },
+  { slug: "slack", label: "Slack", Icon: SlackIcon },
+  { slug: "github", label: "GitHub", Icon: GitHubIcon },
+  { slug: "linear", label: "Linear", Icon: LinearIcon },
+  { slug: "notion", label: "Notion", Icon: NotionIcon },
+  { slug: "googlecalendar", label: "Calendar", Icon: GoogleCalendarIcon },
 ];
 
 /** Read-only probe actions per tool slug. Tools without an entry get no Test button. */
@@ -622,7 +619,7 @@ export function IntegrationsPanel({ jwt }: IntegrationsPanelProps) {
                             />
 
                             {/* Tool icon + label */}
-                            <Icon className="h-3.5 w-3.5 shrink-0" />
+                            <Icon className="shrink-0" size={18} />
                             <span className="flex-1 truncate text-[11px]">{label}</span>
 
                             {/* Status badge (connected only) */}
