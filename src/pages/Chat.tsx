@@ -2953,16 +2953,16 @@ export default function Chat() {
               </button>
             </div>
 
-            {/* Workspace switcher — only shown to signed-in users */}
+            {/* Workspace switcher — sidebar instance (sign-in only).
+                Top-bar pill instance lives in the main header above. */}
             {jwt && (
               <WorkspaceSwitcher
+                jwt={jwt}
                 activeWorkspaceId={activeWorkspaceId}
-                onSwitch={(id) => {
+                onChange={(id) => {
                   setActiveWorkspaceId(id);
                   createNewThread();
                 }}
-                userId={userId}
-                onInviteClick={(wsId) => setInviteDialogWorkspaceId(wsId)}
               />
             )}
 
@@ -3364,6 +3364,19 @@ export default function Chat() {
             {/* Model picker — chat mode only */}
             {view === "chat" && (
               <ModelPicker value={model} onChange={setModel} onUpgrade={handleUpgrade} tier={tier} />
+            )}
+
+            {/* Workspace switcher pill — left of NotificationCenter */}
+            {/* TODO: filter threads/memories by activeWorkspaceId in subsequent wave */}
+            {view === "chat" && (
+              <WorkspaceSwitcher
+                jwt={jwt}
+                activeWorkspaceId={activeWorkspaceId}
+                onChange={(id) => {
+                  setActiveWorkspaceId(id);
+                  createNewThread();
+                }}
+              />
             )}
 
             {/* Notification center */}
