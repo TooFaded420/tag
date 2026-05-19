@@ -49,6 +49,7 @@ import { TurnstileGate } from "@/components/chat/TurnstileGate";
 import { MemoryPanel } from "@/components/chat/MemoryPanel";
 import { IntegrationsPanel, readComposioKey } from "@/components/chat/IntegrationsPanel";
 import { AgentActivityLog } from "@/components/chat/AgentActivityLog";
+import { UsageDashboard } from "@/components/chat/UsageDashboard";
 import { CompareView } from "@/components/chat/CompareView";
 import { AgentView } from "@/components/chat/AgentView";
 import { FileDropzone } from "@/components/chat/FileDropzone";
@@ -3261,6 +3262,9 @@ export default function Chat() {
 
               {/* Integrations panel — per-user Composio OAuth connections */}
               <IntegrationsPanel jwt={jwt} />
+
+              {/* Usage dashboard — token/cost stats per model */}
+              {jwt && <UsageDashboard jwt={jwt} />}
 
               {/* Agent activity log — collapsible tool call history */}
               <AgentActivityLog jwt={jwt} />
