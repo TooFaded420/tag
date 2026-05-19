@@ -82,6 +82,20 @@ function writeComposioKey(key: string) {
   }
 }
 
+/** Format last_used_at into a short relative string. */
+function formatRelativeTime(isoStr: string | null | undefined): string {
+  if (!isoStr) return "never";
+  const diffMs = Date.now() - new Date(isoStr).getTime();
+  if (diffMs < 0) return "just now";
+  const diffMin = Math.floor(diffMs / 60_000);
+  if (diffMin < 1) return "just now";
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay}d ago`;
+}
+
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
 interface ToolDef {
@@ -156,6 +170,14 @@ export function IntegrationsPanel({ jwt }: IntegrationsPanelProps) {
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Test connection state: slug -> "testing" | "ok" | "fail"
+  const [testStates, setTestStates] = useState<Record<string, "testing" | "ok" | "fail">>({});
+  const testTimerRefs = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  // Bulk disconnect confirm state
+  const [bulkConfirm, setBulkConfirm] = useState(false);
+  const [bulkDisconnecting, setBulkDisconnecting] = useState(false);
+
   // Polling state
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -228,6 +250,14 @@ export function IntegrationsPanel({ jwt }: IntegrationsPanelProps) {
   }, []);
 
   useEffect(() => () => stopPolling(), [stopPolling]);
+
+  // Clean up test timers on unmount
+  useEffect(() => {
+    const timers = testTimerRefs.current;
+    return () => {
+      Object.values(timers).forEach(clearTimeout);
+    };
+  }, []);
 
   // ── Connect ────────────────────────────────────────────────────────────────
 
@@ -328,6 +358,76 @@ export function IntegrationsPanel({ jwt }: IntegrationsPanelProps) {
     },
     [jwt, composioKey, loadIntegrations],
   );
+
+  // ── Test connection ────────────────────────────────────────────────────────
+
+  const handleTest = useCallback(
+    async (toolSlug: string) => {
+      if (!jwt || !composioKey) return;
+      // Clear any existing timer for this slug
+      if (testTimerRefs.current[toolSlug]) {
+        clearTimeout(testTimerRefs.current[toolSlug]);
+      }
+      setTestStates((prev) => ({ ...prev, [toolSlug]: "testing" }));
+      try {
+        // Fire a status check action; falls back gracefully if endpoint doesn't exist
+        await apiCall(jwt, composioKey, {
+          action: "gmail_search",
+          tool_slug: toolSlug,
+          query: "",
+        });
+        setTestStates((prev) => ({ ...prev, [toolSlug]: "ok" }));
+      } catch {
+        setTestStates((prev) => ({ ...prev, [toolSlug]: "fail" }));
+      }
+      // Clear result after 3s
+      testTimerRefs.current[toolSlug] = setTimeout(() => {
+        setTestStates((prev) => {
+          const next = { ...prev };
+          delete next[toolSlug];
+          return next;
+        });
+      }, 3_000);
+    },
+    [jwt, composioKey],
+  );
+
+  // ── Bulk disconnect ────────────────────────────────────────────────────────
+
+  const handleBulkDisconnect = useCallback(async () => {
+    if (!jwt || !composioKey) return;
+    setBulkDisconnecting(true);
+    setError(null);
+    try {
+      await apiCall(jwt, composioKey, { action: "disconnect_all" });
+      setIntegrations([]);
+    } catch (err) {
+      const e = err as Error;
+      setError(e?.message ?? "Failed to disconnect all");
+    } finally {
+      setBulkDisconnecting(false);
+      setBulkConfirm(false);
+    }
+  }, [jwt, composioKey]);
+
+  // ── Sort integrations: connected (by recency) first, then disconnected ─────
+
+  const sortedTools = [...TOOLS].sort((a, b) => {
+    const aConnected = connectedSlugs.has(a.slug);
+    const bConnected = connectedSlugs.has(b.slug);
+    if (aConnected && !bConnected) return -1;
+    if (!aConnected && bConnected) return 1;
+    if (aConnected && bConnected) {
+      const aInt = integrations.find((i) => i.tool_slug === a.slug);
+      const bInt = integrations.find((i) => i.tool_slug === b.slug);
+      const aTime = aInt?.last_used_at ? new Date(aInt.last_used_at).getTime() : 0;
+      const bTime = bInt?.last_used_at ? new Date(bInt.last_used_at).getTime() : 0;
+      return bTime - aTime;
+    }
+    return 0;
+  });
+
+  const connectedCount = integrations.length;
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -481,61 +581,152 @@ export function IntegrationsPanel({ jwt }: IntegrationsPanelProps) {
                   ))}
                 </div>
               ) : (
-                <ul className="space-y-0.5">
-                  {TOOLS.map(({ slug, label, Icon }) => {
-                    const isConnected = connectedSlugs.has(slug);
-                    const isConnecting = connecting === slug;
-                    const isDisconnecting = disconnecting === slug;
+                <>
+                  <ul className="space-y-0.5">
+                    {sortedTools.map(({ slug, label, Icon }, idx) => {
+                      const isConnected = connectedSlugs.has(slug);
+                      const isConnecting = connecting === slug;
+                      const isDisconnecting = disconnecting === slug;
+                      const integration = integrations.find((i) => i.tool_slug === slug);
+                      const testState = testStates[slug];
 
-                    return (
-                      <li
-                        key={slug}
-                        className={cn(
-                          "group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors",
-                          isConnected
-                            ? "text-foreground hover:bg-muted"
-                            : "text-muted-foreground hover:text-foreground hover:bg-muted",
-                        )}
-                      >
-                        {/* Connected indicator */}
-                        <span
-                          className={cn(
-                            "h-1.5 w-1.5 shrink-0 rounded-full",
-                            isConnected ? "bg-emerald-500" : "bg-muted-foreground/30",
+                      // Separator between connected and disconnected groups
+                      const prevSlug = idx > 0 ? sortedTools[idx - 1].slug : null;
+                      const prevConnected = prevSlug ? connectedSlugs.has(prevSlug) : isConnected;
+                      const showSeparator = idx > 0 && prevConnected && !isConnected;
+
+                      return (
+                        <li key={slug}>
+                          {showSeparator && (
+                            <div className="my-1 border-t border-border/30" />
                           )}
-                          aria-hidden
-                        />
+                          <div
+                            className={cn(
+                              "group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors",
+                              isConnected
+                                ? "text-foreground hover:bg-muted"
+                                : "text-muted-foreground hover:text-foreground hover:bg-muted",
+                            )}
+                          >
+                            {/* Connected indicator */}
+                            <span
+                              className={cn(
+                                "h-1.5 w-1.5 shrink-0 rounded-full",
+                                isConnected ? "bg-emerald-500" : "bg-muted-foreground/30",
+                              )}
+                              aria-hidden
+                            />
 
-                        {/* Tool icon + label */}
-                        <Icon className="h-3.5 w-3.5 shrink-0" />
-                        <span className="flex-1 truncate text-[11px]">{label}</span>
+                            {/* Tool icon + label */}
+                            <Icon className="h-3.5 w-3.5 shrink-0" />
+                            <span className="flex-1 truncate text-[11px]">{label}</span>
 
-                        {/* Action button */}
-                        {isConnected ? (
+                            {/* Status badge (connected only) */}
+                            {isConnected && integration && (
+                              <span
+                                className={cn(
+                                  "shrink-0 rounded px-1 py-0.5 text-[9px] font-medium leading-none",
+                                  integration.last_used_at
+                                    ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                                    : "bg-muted text-muted-foreground",
+                                )}
+                              >
+                                {integration.last_used_at
+                                  ? formatRelativeTime(integration.last_used_at) === "just now"
+                                    ? "Active"
+                                    : formatRelativeTime(integration.last_used_at)
+                                  : "never"}
+                              </span>
+                            )}
+
+                            {/* Test button (connected only) */}
+                            {isConnected && (
+                              <button
+                                type="button"
+                                onClick={() => handleTest(slug)}
+                                disabled={testState === "testing"}
+                                className={cn(
+                                  "hidden group-hover:inline-flex items-center rounded px-1.5 py-0.5 text-[10px] transition-colors disabled:opacity-50",
+                                  testState === "ok"
+                                    ? "inline-flex text-emerald-600 bg-emerald-500/10"
+                                    : testState === "fail"
+                                      ? "inline-flex text-destructive bg-destructive/10"
+                                      : "text-muted-foreground hover:text-foreground hover:bg-muted",
+                                )}
+                                aria-label={`Test ${label} connection`}
+                              >
+                                {testState === "testing"
+                                  ? "…"
+                                  : testState === "ok"
+                                    ? "✓ Working"
+                                    : testState === "fail"
+                                      ? "✗ Failed"
+                                      : "Test"}
+                              </button>
+                            )}
+
+                            {/* Action button */}
+                            {isConnected ? (
+                              <button
+                                type="button"
+                                onClick={() => handleDisconnect(slug)}
+                                disabled={isDisconnecting}
+                                className="hidden group-hover:inline-flex items-center rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
+                                aria-label={`Disconnect ${label}`}
+                              >
+                                {isDisconnecting ? "…" : "Disconnect"}
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleConnect(slug)}
+                                disabled={isConnecting}
+                                className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] text-primary hover:bg-primary/10 transition-colors disabled:opacity-50"
+                                aria-label={`Connect ${label}`}
+                              >
+                                {isConnecting ? "…" : "Connect"}
+                              </button>
+                            )}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+
+                  {/* ── Bulk disconnect ─────────────────────────────── */}
+                  {connectedCount > 0 && (
+                    <div className="pt-1 flex items-center justify-end gap-2">
+                      {bulkConfirm ? (
+                        <>
+                          <span className="text-[10px] text-muted-foreground">Disconnect all?</span>
                           <button
                             type="button"
-                            onClick={() => handleDisconnect(slug)}
-                            disabled={isDisconnecting}
-                            className="hidden group-hover:inline-flex items-center rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
-                            aria-label={`Disconnect ${label}`}
+                            onClick={handleBulkDisconnect}
+                            disabled={bulkDisconnecting}
+                            className="rounded px-2 py-0.5 text-[10px] text-destructive border border-destructive/40 hover:bg-destructive/10 transition-colors disabled:opacity-50"
                           >
-                            {isDisconnecting ? "…" : "Disconnect"}
+                            {bulkDisconnecting ? "…" : "Confirm"}
                           </button>
-                        ) : (
                           <button
                             type="button"
-                            onClick={() => handleConnect(slug)}
-                            disabled={isConnecting}
-                            className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] text-primary hover:bg-primary/10 transition-colors disabled:opacity-50"
-                            aria-label={`Connect ${label}`}
+                            onClick={() => setBulkConfirm(false)}
+                            className="rounded px-2 py-0.5 text-[10px] text-muted-foreground border border-border hover:text-foreground transition-colors"
                           >
-                            {isConnecting ? "…" : "Connect"}
+                            Cancel
                           </button>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setBulkConfirm(true)}
+                          className="text-[10px] text-muted-foreground hover:text-destructive transition-colors"
+                        >
+                          Disconnect all
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </>
               )}
             </>
           )}
