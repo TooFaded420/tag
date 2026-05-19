@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { Pin } from "lucide-react";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
+const PINNED_STORAGE_KEY = "tag_pinned_memories";
 
 interface Mem0Memory {
   id: string;
@@ -48,6 +50,32 @@ function importanceFraction(importance: number): number {
   return Math.max(0, Math.min(1, importance ?? 0));
 }
 
+/** Return 1, 2, or 3 dots based on importance bucket. */
+function importanceDots(importance: number): number {
+  const f = importanceFraction(importance);
+  if (f <= 0.33) return 1;
+  if (f <= 0.66) return 2;
+  return 3;
+}
+
+function loadPinnedIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(PINNED_STORAGE_KEY);
+    if (!raw) return new Set();
+    return new Set(JSON.parse(raw) as string[]);
+  } catch {
+    return new Set();
+  }
+}
+
+function savePinnedIds(ids: Set<string>): void {
+  try {
+    localStorage.setItem(PINNED_STORAGE_KEY, JSON.stringify([...ids]));
+  } catch {
+    // storage unavailable — silently ignore
+  }
+}
+
 interface MemoryPanelProps {
   jwt: string | null;
 }
@@ -55,6 +83,8 @@ interface MemoryPanelProps {
 export function MemoryPanel({ jwt }: MemoryPanelProps) {
   const [memories, setMemories] = useState<Mem0Memory[]>([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(loadPinnedIds);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -87,14 +117,47 @@ export function MemoryPanel({ jwt }: MemoryPanelProps) {
     };
   }, [jwt]);
 
+  function togglePin(id: string) {
+    setPinnedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      savePinnedIds(next);
+      return next;
+    });
+  }
+
   // Anon users: render nothing
   if (!jwt) return null;
+
+  const query = search.trim().toLowerCase();
+  const filtered = query
+    ? memories.filter((m) => m.content.toLowerCase().includes(query))
+    : memories;
+
+  // Sort: pinned first, then by created_at desc (original order preserved otherwise)
+  const sorted = [
+    ...filtered.filter((m) => pinnedIds.has(m.id)),
+    ...filtered.filter((m) => !pinnedIds.has(m.id)),
+  ];
 
   return (
     <aside className="flex flex-col gap-3">
       <h2 className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
-        I remember
+        I remember ({loading ? "…" : sorted.length})
       </h2>
+
+      {/* Search input */}
+      <input
+        type="search"
+        placeholder="Filter memories…"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        className="w-full rounded-md border border-border/60 bg-background px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 outline-none focus:ring-1 focus:ring-primary/40"
+      />
 
       {loading ? (
         <div className="flex flex-col gap-2">
@@ -105,43 +168,68 @@ export function MemoryPanel({ jwt }: MemoryPanelProps) {
             />
           ))}
         </div>
-      ) : memories.length === 0 ? (
+      ) : sorted.length === 0 ? (
         <p className="text-xs text-muted-foreground leading-relaxed">
-          No memories yet — your prompts are saved as you chat.
+          {query
+            ? "No memories match that search."
+            : "No memories yet — your prompts are saved as you chat."}
         </p>
       ) : (
         <ul className="flex flex-col gap-2">
-          {memories.map((mem) => (
-            <li
-              key={mem.id}
-              className="rounded-md border border-border/60 bg-muted/40 px-3 py-2.5"
-            >
-              <p className="line-clamp-2 text-xs text-foreground leading-relaxed">
-                {mem.content}
-              </p>
-              <div className="mt-1.5 flex items-center gap-2">
-                <span className="text-[10px] text-muted-foreground/60 shrink-0">
-                  {relativeTime(mem.created_at)}
-                </span>
-                {/* Importance bar: 5 dots */}
-                <div className="flex items-center gap-0.5">
-                  {Array.from({ length: 5 }).map((_, i) => {
-                    const filled = i < Math.round(importanceFraction(mem.importance) * 5);
-                    return (
-                      <span
-                        key={i}
-                        className={
-                          filled
-                            ? "h-1.5 w-1.5 rounded-full bg-primary/70"
-                            : "h-1.5 w-1.5 rounded-full bg-muted-foreground/20"
-                        }
-                      />
-                    );
-                  })}
+          {sorted.map((mem) => {
+            const pinned = pinnedIds.has(mem.id);
+            const dots = importanceDots(mem.importance);
+            return (
+              <li
+                key={mem.id}
+                className="rounded-md border border-border/60 bg-muted/40 px-3 py-2.5"
+              >
+                {/* Pinned badge */}
+                {pinned && (
+                  <span className="mb-1 inline-flex items-center gap-0.5 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-primary/70">
+                    <Pin className="h-2.5 w-2.5" />
+                    Pinned
+                  </span>
+                )}
+                <p className="line-clamp-2 text-xs text-foreground leading-relaxed">
+                  {mem.content}
+                </p>
+                <div className="mt-1.5 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-muted-foreground/60 shrink-0">
+                      {relativeTime(mem.created_at)}
+                    </span>
+                    {/* Importance: 1-3 dots */}
+                    <div className="flex items-center gap-0.5" title={`Importance: ${mem.importance?.toFixed(2) ?? "n/a"}`}>
+                      {Array.from({ length: 3 }).map((_, i) => (
+                        <span
+                          key={i}
+                          className={
+                            i < dots
+                              ? "h-1.5 w-1.5 rounded-full bg-primary/70"
+                              : "h-1.5 w-1.5 rounded-full bg-muted-foreground/20"
+                          }
+                        />
+                      ))}
+                    </div>
+                  </div>
+                  {/* Pin button */}
+                  <button
+                    type="button"
+                    onClick={() => togglePin(mem.id)}
+                    title={pinned ? "Unpin memory" : "Pin memory"}
+                    className={`rounded p-0.5 transition-colors ${
+                      pinned
+                        ? "text-primary/70 hover:text-primary"
+                        : "text-muted-foreground/40 hover:text-muted-foreground"
+                    }`}
+                  >
+                    <Pin className="h-3 w-3" />
+                  </button>
                 </div>
-              </div>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
       )}
     </aside>

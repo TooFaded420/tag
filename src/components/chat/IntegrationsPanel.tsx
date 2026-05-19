@@ -113,6 +113,14 @@ const TOOLS: ToolDef[] = [
   { slug: "googlecalendar", label: "Calendar", Icon: Calendar },
 ];
 
+/** Read-only probe actions per tool slug. Tools without an entry get no Test button. */
+const TEST_PROBES: Record<string, Record<string, unknown>> = {
+  gmail: { action: "gmail_search", query: "is:unread" },
+  slack: { action: "slack_search", query: "test" },
+  linear: { action: "linear_list_issues", limit: 1 },
+  notion: { action: "notion_search", query: "test" },
+};
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Integration {
@@ -370,12 +378,8 @@ export function IntegrationsPanel({ jwt }: IntegrationsPanelProps) {
       }
       setTestStates((prev) => ({ ...prev, [toolSlug]: "testing" }));
       try {
-        // Fire a status check action; falls back gracefully if endpoint doesn't exist
-        await apiCall(jwt, composioKey, {
-          action: "gmail_search",
-          tool_slug: toolSlug,
-          query: "",
-        });
+        const probe = TEST_PROBES[toolSlug];
+        await apiCall(jwt, composioKey, { ...probe, tool_slug: toolSlug });
         setTestStates((prev) => ({ ...prev, [toolSlug]: "ok" }));
       } catch {
         setTestStates((prev) => ({ ...prev, [toolSlug]: "fail" }));
@@ -639,14 +643,14 @@ export function IntegrationsPanel({ jwt }: IntegrationsPanelProps) {
                               </span>
                             )}
 
-                            {/* Test button (connected only) */}
-                            {isConnected && (
+                            {/* Test button (connected only, tools with a read-only probe only) */}
+                            {isConnected && slug in TEST_PROBES && (
                               <button
                                 type="button"
                                 onClick={() => handleTest(slug)}
                                 disabled={testState === "testing"}
                                 className={cn(
-                                  "hidden group-hover:inline-flex items-center rounded px-1.5 py-0.5 text-[10px] transition-colors disabled:opacity-50",
+                                  "inline-flex items-center rounded px-1.5 py-0.5 text-[10px] transition-all disabled:opacity-50 opacity-0 group-hover:opacity-100 focus:opacity-100 focus-visible:opacity-100",
                                   testState === "ok"
                                     ? "inline-flex text-emerald-600 bg-emerald-500/10"
                                     : testState === "fail"

@@ -120,8 +120,9 @@ function validateAndImport(raw: string): { ok: boolean; error?: string; count?: 
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     return { ok: false, error: "File must be a JSON object." };
   }
-  // Prototype pollution guard
-  if ("__proto__" in parsed || "constructor" in parsed || "prototype" in parsed) {
+  // Prototype pollution guard — use Object.hasOwn to check own properties only.
+  // The `in` operator checks the prototype chain, so `"constructor" in {}` is always true.
+  if (Object.hasOwn(parsed, "__proto__") || Object.hasOwn(parsed, "constructor") || Object.hasOwn(parsed, "prototype")) {
     return { ok: false, error: "Rejected: suspicious keys detected." };
   }
   const obj = parsed as Record<string, unknown>;
@@ -225,7 +226,12 @@ export function BYOKDrawer({ open, onClose, onKeysChange }: Props) {
       "This action is irreversible. All local data will be permanently deleted. Proceed?"
     );
     if (!second) return;
-    localStorage.clear();
+    const keysToDelete: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith("tag_")) keysToDelete.push(k);
+    }
+    keysToDelete.forEach((k) => localStorage.removeItem(k));
     window.location.reload();
   };
 
@@ -253,6 +259,7 @@ export function BYOKDrawer({ open, onClose, onKeysChange }: Props) {
         }, 100);
       }
     };
+    reader.onerror = () => setImportError("Could not read file.");
     reader.readAsText(file);
     // Reset file input so the same file can be re-selected
     e.target.value = "";
