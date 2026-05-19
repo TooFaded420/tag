@@ -794,6 +794,8 @@ export default function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lastWrittenMemoryRef = useRef<string>("");
+  const chatStatusRef = useRef<string>("");
+  const chatSetMessagesRef = useRef<((msgs: unknown[]) => void) | null>(null);
 
   // ── Auth ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1511,6 +1513,12 @@ export default function Chat() {
     });
   }, [chat.messages, activeThreadId]);
 
+  // ── Sync chat refs so keydown handler can read latest without re-binding ──
+  useEffect(() => {
+    chatStatusRef.current = chat.status;
+    chatSetMessagesRef.current = chat.setMessages;
+  });
+
   // ── Compute cost when streaming finishes ─────────────────────────────────
   const prevStatusRef = useRef(chat.status);
   useEffect(() => {
@@ -1683,13 +1691,13 @@ export default function Chat() {
         setByokOpen(true);
         return;
       }
-      // Cmd/Ctrl+Shift+L — clear current thread messages
-      if (e.key.toLowerCase() === "l" && e.shiftKey && !inTextInput) {
-        if (chat.status === "streaming" || chat.status === "submitted") return;
+      // Cmd/Ctrl+Shift+Backspace — clear current thread messages
+      if (e.key === "Backspace" && e.shiftKey && !inTextInput) {
+        if (chatStatusRef.current === "streaming" || chatStatusRef.current === "submitted") return;
         e.preventDefault();
         if (!activeThreadId) return;
         if (!window.confirm("Clear all messages in this thread?")) return;
-        chat.setMessages([]);
+        chatSetMessagesRef.current?.([]);
         setThreads((prev) => {
           const updated = prev.map((t) =>
             t.id === activeThreadId ? { ...t, messages: [] } : t
@@ -1704,7 +1712,7 @@ export default function Chat() {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [createNewThread, chat, activeThreadId]);
+  }, [createNewThread, activeThreadId]);
 
   // On first load with no active thread, create one
   useEffect(() => {
@@ -3726,7 +3734,7 @@ export default function Chat() {
                           aria-label="Stop generation"
                           title="Stop generation"
                         >
-                          <Square className="h-4 w-4" />
+                          <Square className="h-4 w-4" fill="currentColor" />
                         </button>
                       ) : (
                         <button
