@@ -50,6 +50,7 @@ import { MemoryPanel } from "@/components/chat/MemoryPanel";
 import { IntegrationsPanel, readComposioKey } from "@/components/chat/IntegrationsPanel";
 import { AgentActivityLog } from "@/components/chat/AgentActivityLog";
 import { UsageDashboard } from "@/components/chat/UsageDashboard";
+import { ScheduledPromptsPanel } from "@/components/chat/ScheduledPromptsPanel";
 import { CompareView } from "@/components/chat/CompareView";
 import { AgentView } from "@/components/chat/AgentView";
 import { FileDropzone } from "@/components/chat/FileDropzone";
@@ -602,7 +603,7 @@ function EmptyState({ onPickPrompt, templates, model, temperature, jwt, onOpenSe
           type="button"
           onClick={onOpenSettings}
           className="hover:text-foreground transition-colors"
-          title="Adjust temperature"
+          title="Open settings"
         >
           temp {temperature.toFixed(1)}
         </button>
@@ -953,7 +954,6 @@ export default function Chat() {
       return isNaN(v) ? 0.7 : Math.min(1.5, Math.max(0, v));
     } catch { return 0.7; }
   });
-  const [exportMenuOpen, setExportMenuOpen] = useState(false); // kept for handleExportThread/JSON which call setExportMenuOpen(false)
   // Edit-message state: { msgId, text }
   const [editingMessage, setEditingMessage] = useState<{ msgId: string; text: string } | null>(null);
   // Esc dirty-check: first Esc on dirty textarea arms a "confirm discard" state
@@ -2498,7 +2498,6 @@ export default function Chat() {
     a.download = `${slug}.md`;
     a.click();
     URL.revokeObjectURL(url);
-    setExportMenuOpen(false);
   }
 
   function handleExportJSON() {
@@ -2548,7 +2547,6 @@ export default function Chat() {
     a.download = `${slug}-${date}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    setExportMenuOpen(false);
   }
 
   function handleImportJSON(file: File) {
@@ -2621,7 +2619,6 @@ export default function Chat() {
         saveThreadsWithIndicator(updated);
         setActiveThreadId(newThread.id);
         try { localStorage.setItem(ACTIVE_THREAD_KEY, newThread.id); } catch {}
-        setExportMenuOpen(false);
       } catch (err) {
         setImportError(err instanceof Error ? err.message : "Failed to import file.");
         setTimeout(() => setImportError(null), 8000);
@@ -3237,6 +3234,9 @@ export default function Chat() {
               {/* Integrations panel — per-user Composio OAuth connections */}
               <IntegrationsPanel jwt={jwt} />
 
+              {/* Scheduled prompts — save prompt + cron schedule for automatic runs */}
+              {jwt && <ScheduledPromptsPanel jwt={jwt} />}
+
               {/* Usage dashboard — token/cost stats per model */}
               {jwt && <UsageDashboard jwt={jwt} />}
 
@@ -3705,6 +3705,30 @@ export default function Chat() {
                         </div>
                       </div>
                     )}
+
+                    {/* Current model info */}
+                    <div className="px-3 pb-2">
+                      <p className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground/50 px-2 pb-1">Current model</p>
+                      {(() => {
+                        const meta = MODELS.find((m) => m.id === model);
+                        const ctxTokens = getContextWindow(model);
+                        const ctxLabel = ctxTokens >= 1000 ? `${Math.round(ctxTokens / 1000)}k tokens` : `${ctxTokens} tokens`;
+                        const costs = MODEL_COSTS[model];
+                        const hasCost = costs && (costs.in > 0 || costs.out > 0);
+                        const providerLabel = meta?.provider === "byok" ? "BYOK" : "Synthetic";
+                        return (
+                          <div className="rounded-md bg-muted/40 px-2 py-1.5 space-y-0.5">
+                            <p className="text-xs font-medium text-foreground truncate">{meta?.label ?? model}</p>
+                            <p className="text-[10px] text-muted-foreground/70">{providerLabel} · {ctxLabel}</p>
+                            {hasCost && (
+                              <p className="font-mono text-[10px] text-muted-foreground/60">
+                                ${costs.in}/1k in · ${costs.out}/1k out
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
 
                     <div className="h-px bg-border/50 mx-3 my-1" />
 
@@ -4565,13 +4589,16 @@ export default function Chat() {
                         )}
                         {/* Save dot — pulses during save, fades when idle */}
                         {saveState !== "idle" && (
-                          <span
-                            className={cn(
-                              "inline-block h-1.5 w-1.5 rounded-full shrink-0 transition-opacity",
-                              saveState === "saving" ? "bg-primary animate-pulse" : "bg-primary/30"
-                            )}
-                            title={saveState === "saving" ? "Saving…" : "Saved"}
-                          />
+                          <span className="inline-flex items-center">
+                            <span
+                              className={cn(
+                                "inline-block h-1.5 w-1.5 rounded-full shrink-0 transition-opacity",
+                                saveState === "saving" ? "bg-primary animate-pulse" : "bg-primary/30"
+                              )}
+                              title={saveState === "saving" ? "Saving…" : "Saved"}
+                            />
+                            <span className="sr-only">{saveState === "saving" ? "Saving..." : "Saved"}</span>
+                          </span>
                         )}
                         {(chat.status === "streaming" || chat.status === "submitted") ? (
                           <button
