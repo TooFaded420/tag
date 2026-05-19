@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useDeferredValue, useRef, useState } from "react";
 import { Pin } from "lucide-react";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
@@ -64,6 +64,7 @@ function loadPinnedIds(): Set<string> {
     if (!raw) return new Set();
     return new Set(JSON.parse(raw) as string[]);
   } catch {
+    localStorage.removeItem(PINNED_STORAGE_KEY);
     return new Set();
   }
 }
@@ -86,6 +87,7 @@ export function MemoryPanel({ jwt }: MemoryPanelProps) {
   const [search, setSearch] = useState("");
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(loadPinnedIds);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const deferredQuery = useDeferredValue(search);
 
   useEffect(() => {
     if (!jwt) {
@@ -101,6 +103,14 @@ export function MemoryPanel({ jwt }: MemoryPanelProps) {
       const result = await fetchRecentMemories(jwt);
       if (!cancelled) {
         setMemories(result);
+        setPinnedIds((prev) => {
+          const liveIds = new Set(result.map((m) => m.id));
+          const pruned = new Set([...prev].filter((id) => liveIds.has(id)));
+          if (pruned.size !== prev.size) {
+            savePinnedIds(pruned);
+          }
+          return pruned;
+        });
         setLoading(false);
       }
     }
@@ -133,15 +143,18 @@ export function MemoryPanel({ jwt }: MemoryPanelProps) {
   // Anon users: render nothing
   if (!jwt) return null;
 
-  const query = search.trim().toLowerCase();
-  const filtered = query
-    ? memories.filter((m) => m.content.toLowerCase().includes(query))
+  const lowerQuery = deferredQuery.toLowerCase().trim();
+  const filtered = lowerQuery
+    ? memories.filter((m) => m.content.toLowerCase().includes(lowerQuery))
     : memories;
 
-  // Sort: pinned first, then by created_at desc (original order preserved otherwise)
+  const byDate = (a: Mem0Memory, b: Mem0Memory) =>
+    new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+
+  // Sort: pinned first (newest → oldest), then unpinned (newest → oldest)
   const sorted = [
-    ...filtered.filter((m) => pinnedIds.has(m.id)),
-    ...filtered.filter((m) => !pinnedIds.has(m.id)),
+    ...filtered.filter((m) => pinnedIds.has(m.id)).sort(byDate),
+    ...filtered.filter((m) => !pinnedIds.has(m.id)).sort(byDate),
   ];
 
   return (
@@ -170,7 +183,7 @@ export function MemoryPanel({ jwt }: MemoryPanelProps) {
         </div>
       ) : sorted.length === 0 ? (
         <p className="text-xs text-muted-foreground leading-relaxed">
-          {query
+          {lowerQuery
             ? "No memories match that search."
             : "No memories yet — your prompts are saved as you chat."}
         </p>
