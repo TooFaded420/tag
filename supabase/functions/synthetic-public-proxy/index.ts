@@ -21,12 +21,13 @@ const ANON_MODELS = new Set(["hf:openai/gpt-oss-120b"]);
 const FREE_MODELS = new Set([
   ...ANON_MODELS,
   "hf:zai-org/GLM-4.7-Flash",
-  // TODO: Verify synthetic.new slug + actual pricing — these are best-guess based on common naming. Update once verified against dev.synthetic.new/docs/models.
-  "hf:Qwen/Qwen3.2-72B-Instruct",
-  "hf:deepseek-ai/DeepSeek-V3.5",
 ]);
 const PRO_MODELS = new Set([
   ...FREE_MODELS,
+  // Qwen 3.2 72B + DeepSeek V3.5 reclassified Pro-only (codex round 24):
+  // unconfirmed synthetic.new subsidy — gate conservatively until verified.
+  "hf:Qwen/Qwen3.2-72B-Instruct",
+  "hf:deepseek-ai/DeepSeek-V3.5",
   "hf:moonshotai/Kimi-K2.6",
   "hf:zai-org/GLM-5.1",
   "hf:MiniMaxAI/MiniMax-M2.5",
@@ -37,6 +38,8 @@ const PRO_MODELS = new Set([
 
 // Premium models consume the premium_msg_count quota bucket
 const PREMIUM_MODELS = new Set([
+  "hf:Qwen/Qwen3.2-72B-Instruct",
+  "hf:deepseek-ai/DeepSeek-V3.5",
   "hf:moonshotai/Kimi-K2.6",
   "hf:zai-org/GLM-5.1",
   "hf:MiniMaxAI/MiniMax-M2.5",
@@ -550,6 +553,18 @@ serve(async (req) => {
         user_id: userId ?? undefined,
         ip_hash: !userId ? (await sha256(ip)).slice(0, 8) : undefined,
       });
+      // 404 with a model-not-found hint → return a user-friendly message
+      if (upstream.status === 404) {
+        const detailStr = typeof detail === "string" ? detail : JSON.stringify(detail ?? "");
+        if (/model|not_found/i.test(detailStr)) {
+          // deno-lint-ignore no-explicit-any
+          const modelHint = (detail as any)?.model ?? body.model;
+          return errorResponse(
+            { error: "Model temporarily unavailable", model: modelHint },
+            502,
+          );
+        }
+      }
       return errorResponse(
         { error: "upstream error", status: upstream.status, detail },
         502,

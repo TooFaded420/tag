@@ -63,13 +63,12 @@ export const MODELS: ModelOption[] = [
     description: "Nvidia 120B for coding agents. 262k context.",
     pricing: "$0.30/M in, $1.00/M out",
   },
-  // TODO: Verify synthetic.new slug + actual pricing — these are best-guess based on common naming. Update once verified against dev.synthetic.new/docs/models.
   {
     id: "hf:Qwen/Qwen3.2-72B-Instruct",
     label: "Qwen 3.2 72B",
     provider: "synthetic",
-    tier: "free",
-    description: "Qwen 3.2 72B Instruct. Balanced performance. 32k context.",
+    tier: "pro",
+    description: "Qwen 3.2 72B Instruct. Balanced performance. 32k context. Pro only.",
     pricing: "$0.40/M in, $0.80/M out",
   },
   {
@@ -84,8 +83,8 @@ export const MODELS: ModelOption[] = [
     id: "hf:deepseek-ai/DeepSeek-V3.5",
     label: "DeepSeek V3.5",
     provider: "synthetic",
-    tier: "free",
-    description: "DeepSeek V3.5. Strong coding + reasoning. 64k context.",
+    tier: "pro",
+    description: "DeepSeek V3.5. Strong coding + reasoning. 64k context. Pro only.",
     pricing: "$0.30/M in, $0.60/M out",
   },
   {

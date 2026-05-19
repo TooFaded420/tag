@@ -484,11 +484,17 @@ export function ScheduledPromptsPanel({ jwt }: ScheduledPromptsPanelProps) {
                                     </span>
                                   )}
                                 </button>
-                                {expandedRunId === run.id && run.response_text && (
-                                  <div className="mx-1 mt-0.5 mb-1 rounded bg-background border border-border/40 px-2 py-1.5 text-[10px] text-foreground whitespace-pre-wrap leading-relaxed max-h-40 overflow-y-auto">
-                                    {run.response_text}
-                                  </div>
-                                )}
+                                {expandedRunId === run.id && run.response_text && (() => {
+                                  const TRUNC = 2000;
+                                  const display = run.response_text.length > TRUNC
+                                    ? run.response_text.slice(0, TRUNC) + `\n\n…(${run.response_text.length - TRUNC} more chars truncated)`
+                                    : run.response_text;
+                                  return (
+                                    <div className="mx-1 mt-0.5 mb-1 rounded bg-background border border-border/40 px-2 py-1.5 text-[10px] text-foreground whitespace-pre-wrap leading-relaxed max-h-40 overflow-y-auto break-words" style={{ wordBreak: "break-word", overflowWrap: "anywhere" }}>
+                                      {display}
+                                    </div>
+                                  );
+                                })()}
                               </li>
                             ))}
                           </ul>
@@ -599,11 +605,17 @@ export function ScheduledPromptsPanel({ jwt }: ScheduledPromptsPanelProps) {
                             </span>
                           )}
                         </button>
-                        {expandedRunId === run.id && run.response_text && (
-                          <div className="mx-1 mt-0.5 mb-1 rounded bg-background border border-border/40 px-2 py-1.5 text-[10px] text-foreground whitespace-pre-wrap leading-relaxed max-h-40 overflow-y-auto">
-                            {run.response_text}
-                          </div>
-                        )}
+                        {expandedRunId === run.id && run.response_text && (() => {
+                          const TRUNC = 2000;
+                          const display = run.response_text.length > TRUNC
+                            ? run.response_text.slice(0, TRUNC) + `\n\n…(${run.response_text.length - TRUNC} more chars truncated)`
+                            : run.response_text;
+                          return (
+                            <div className="mx-1 mt-0.5 mb-1 rounded bg-background border border-border/40 px-2 py-1.5 text-[10px] text-foreground whitespace-pre-wrap leading-relaxed max-h-40 overflow-y-auto break-words" style={{ wordBreak: "break-word", overflowWrap: "anywhere" }}>
+                              {display}
+                            </div>
+                          );
+                        })()}
                       </li>
                     );
                   })}
