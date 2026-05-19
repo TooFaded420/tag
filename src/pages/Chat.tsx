@@ -49,6 +49,7 @@ import { InviteDialog } from "@/components/chat/InviteDialog";
 import { TurnstileGate } from "@/components/chat/TurnstileGate";
 import { MemoryPanel } from "@/components/chat/MemoryPanel";
 import { IntegrationsPanel, readComposioKey } from "@/components/chat/IntegrationsPanel";
+import { ImageGenPanel } from "@/components/chat/ImageGenPanel";
 import { AgentActivityLog } from "@/components/chat/AgentActivityLog";
 import { NotificationCenter } from "@/components/chat/NotificationCenter";
 import { UsageDashboard } from "@/components/chat/UsageDashboard";
@@ -3222,6 +3223,9 @@ export default function Chat() {
 
               {/* Integrations panel — per-user Composio OAuth connections */}
               <IntegrationsPanel jwt={jwt} />
+
+              {/* Image generation panel — fal.ai FLUX via tag-image-gen */}
+              {jwt && <ImageGenPanel jwt={jwt} />}
 
               {/* Scheduled prompts — save prompt + cron schedule for automatic runs */}
               {jwt && <ScheduledPromptsPanel jwt={jwt} />}
