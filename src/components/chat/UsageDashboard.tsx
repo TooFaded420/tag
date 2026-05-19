@@ -119,9 +119,18 @@ export function UsageDashboard({ jwt }: UsageDashboardProps) {
     }
   }, [jwt]);
 
+  // FIX 2: Reset stale data when JWT rotates so the fetch effect below refires.
   useEffect(() => {
-    if (expanded && jwt && !data) void fetchUsage();
-  }, [expanded, jwt, data, fetchUsage]);
+    setData(null);
+    setError(false);
+  }, [jwt]);
+
+  // FIX 1: Re-fetch when expanded + (no data yet OR previous attempt errored).
+  useEffect(() => {
+    if (!expanded || !jwt) return;
+    if (data && !error) return; // already have fresh data — skip
+    void fetchUsage();
+  }, [expanded, jwt, data, error, fetchUsage]);
 
   if (!jwt) return null;
 
@@ -137,12 +146,18 @@ export function UsageDashboard({ jwt }: UsageDashboardProps) {
     ? OUTCOME_ORDER.reduce((sum, k) => sum + (data.tool_call_count_by_outcome[k] ?? 0), 0)
     : 0;
 
+  // Note: parent sidebar must apply overflow-y-auto for three stacked panels to scroll cleanly.
   return (
     <div className="border-t border-border/40">
       {/* Section header */}
       <button
         type="button"
-        onClick={() => setExpanded((e) => !e)}
+        onClick={() => {
+          setExpanded((e) => {
+            if (e) setError(false); // clear error on collapse so re-expand retries
+            return !e;
+          });
+        }}
         className="w-full flex items-center justify-between px-3 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
         aria-expanded={expanded}
       >
