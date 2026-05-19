@@ -14,8 +14,11 @@ import {
   Copy,
   Crown,
   Download,
+  Eye,
+  EyeOff,
   GitFork,
   Key,
+  Layout,
   Lock,
   LogIn,
   Menu,
@@ -168,6 +171,19 @@ const ANON_SESSION_KEY = "tag_anon_session_v1";
 const TAG_ACTIVE_WORKSPACE_KEY = "tag_active_workspace_v1";
 const TEMPERATURE_KEY = "tag_temperature_v1";
 const MODEL_PRESETS_KEY = "tag_model_presets_v1";
+const REQUIRE_CONFIRM_KEY = "tag_require_confirm";
+const DRY_RUN_KEY = "tag_dry_run";
+const PROMPT_TEMPLATES_KEY = "tag_prompt_templates_v1";
+
+// Tools that require user confirmation before the agent executes them
+const ACTIONS_REQUIRING_CONFIRM = new Set([
+  "gmail_send",
+  "slack_post_message",
+  "github_create_issue",
+  "linear_create_issue",
+  "notion_create_page",
+  "calendar_create_event",
+]);
 
 // Cost tracking: input $/1M tokens, output $/1M tokens (0 = free/synthetic)
 // output-only estimate; input tokens not tracked
@@ -251,6 +267,50 @@ function savePresets(presets: Preset[]): void {
   try {
     localStorage.setItem(MODEL_PRESETS_KEY, JSON.stringify(presets));
   } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// Prompt templates
+// ---------------------------------------------------------------------------
+
+interface PromptTemplate {
+  id: string;
+  name: string;
+  content: string;
+}
+
+const DEFAULT_TEMPLATES: PromptTemplate[] = [
+  { id: "t1", name: "3-bullet summary",        content: "Summarize this in 3 bullet points." },
+  { id: "t2", name: "Translate to Spanish",     content: "Translate to Spanish: {{selection}}" },
+  { id: "t3", name: "Explain like I'm 5",       content: "Explain like I'm 5 years old: {{selection}}" },
+  { id: "t4", name: "Security code review",     content: "Code review the following for security issues:\n\n{{selection}}" },
+  { id: "t5", name: "Extract action items",     content: "Extract all action items from the following text as a numbered list:\n\n{{selection}}" },
+];
+
+function loadTemplates(): PromptTemplate[] {
+  try {
+    const raw = localStorage.getItem(PROMPT_TEMPLATES_KEY);
+    if (!raw) return DEFAULT_TEMPLATES;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_TEMPLATES;
+    return parsed.filter(
+      (e: unknown): e is PromptTemplate =>
+        typeof e === "object" && e !== null &&
+        typeof (e as Record<string, unknown>).id === "string" &&
+        typeof (e as Record<string, unknown>).name === "string" &&
+        typeof (e as Record<string, unknown>).content === "string",
+    );
+  } catch { return DEFAULT_TEMPLATES; }
+}
+
+function saveTemplates(templates: PromptTemplate[]): void {
+  try { localStorage.setItem(PROMPT_TEMPLATES_KEY, JSON.stringify(templates)); } catch {}
+}
+
+function applyTemplate(content: string, selection: string): string {
+  if (content.includes("{{selection}}")) return content.replace(/\{\{selection\}\}/g, selection || "");
+  if (content.includes("{{}}")) return content.replace(/\{\{\}\}/g, selection || "");
+  return content;
 }
 
 // ---------------------------------------------------------------------------
@@ -724,6 +784,39 @@ export default function Chat() {
     try { localStorage.setItem(TEMPERATURE_KEY, String(temperature)); } catch {}
   }, [temperature]);
 
+  // ── Feature: Dry-run mode ───────────────────────────────────────────────
+  const [dryRun, setDryRun] = useState<boolean>(() => {
+    try { return localStorage.getItem(DRY_RUN_KEY) === "true"; } catch { return false; }
+  });
+  const dryRunRef = useRef(dryRun);
+  useEffect(() => {
+    dryRunRef.current = dryRun;
+    try { localStorage.setItem(DRY_RUN_KEY, String(dryRun)); } catch {}
+  }, [dryRun]);
+
+  // ── Feature: Require confirmation for actions ──────────────────────────
+  const [requireConfirm, setRequireConfirm] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem(REQUIRE_CONFIRM_KEY);
+      return v === null ? true : v === "true";
+    } catch { return true; }
+  });
+  const requireConfirmRef = useRef(requireConfirm);
+  useEffect(() => {
+    requireConfirmRef.current = requireConfirm;
+    try { localStorage.setItem(REQUIRE_CONFIRM_KEY, String(requireConfirm)); } catch {}
+  }, [requireConfirm]);
+
+  // Pending action confirmation: set when the agent outputs [ACTION_PLAN:...]
+  const [pendingConfirm, setPendingConfirm] = useState<{ msgId: string; toolName: string; argsJson: string } | null>(null);
+
+  // ── Feature: Prompt templates ──────────────────────────────────────────
+  const [templates, setTemplates] = useState<PromptTemplate[]>(() => loadTemplates());
+  const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [templateEditOpen, setTemplateEditOpen] = useState(false);
+  const [templateDraft, setTemplateDraft] = useState<PromptTemplate>({ id: "", name: "", content: "" });
+  const templatesRef = useRef<HTMLDivElement>(null);
+
   // ── Model presets ───────────────────────────────────────────────────────────
   const [presets, setPresets] = useState<Preset[]>(() => loadPresets());
   const [presetsOpen, setPresetsOpen] = useState(false);
@@ -948,6 +1041,8 @@ export default function Chat() {
       const liveWorkspaceId = activeWorkspaceIdRef.current;
       const liveActiveThread = activeThreadRef.current;
       const liveTemperature = temperatureRef.current;
+      const liveDryRun = dryRunRef.current;
+      const liveRequireConfirm = requireConfirmRef.current;
       const reqBody = init?.body ? JSON.parse(init.body as string) : {};
       // Diagnostic — exposes whether the send is even firing and with what
       // identity. If signed-in chats stop working again, the user can paste
@@ -1026,6 +1121,40 @@ export default function Chat() {
         };
         finalMessages = [fileNoteMsg, ...finalMessages];
         setPendingFileNote(null);
+      }
+
+      // ── Dry-run mode injection ────────────────────────────────────────────
+      if (liveDryRun) {
+        const dryRunMsg = {
+          role: "system",
+          content:
+            "[Override] DRY RUN MODE: For this turn, describe in detail what tools you would call and with what arguments, but do not actually call any. Output your plan as a numbered list prefixed with 🔍.",
+        };
+        const alreadyDryRun = finalMessages.some(
+          (m) => m.role === "system" && m.content.includes("DRY RUN MODE"),
+        );
+        if (!alreadyDryRun) {
+          finalMessages = [dryRunMsg, ...finalMessages];
+        }
+      }
+
+      // ── Confirmation guard injection ──────────────────────────────────────
+      // When require-confirm is on and a Composio key is present, instruct the
+      // agent to output an [ACTION_PLAN:...] sentinel before executing any
+      // side-effecting tool so the client can pause and show the confirm modal.
+      const liveComposioKeyForConfirm = readComposioKey() || undefined;
+      if (liveRequireConfirm && !liveDryRun && liveComposioKeyForConfirm) {
+        const confirmMsg = {
+          role: "system",
+          content:
+            "IMPORTANT: Before calling any of these tools — gmail_send, slack_post_message, github_create_issue, linear_create_issue, notion_create_page, calendar_create_event — you MUST first output a single line in EXACTLY this format (no other text on that line):\n[ACTION_PLAN: <toolName>] <args as compact JSON>\nExample: [ACTION_PLAN: gmail_send] {\"to\":\"alice@example.com\",\"subject\":\"Hello\"}\nThen STOP and wait. If the user's next message is [PROCEED], execute the tool. If it is [CANCEL], apologise and do not execute.",
+        };
+        const alreadyHasConfirmGuard = finalMessages.some(
+          (m) => m.role === "system" && m.content.includes("ACTION_PLAN"),
+        );
+        if (!alreadyHasConfirmGuard) {
+          finalMessages = [confirmMsg, ...finalMessages];
+        }
       }
 
       // ── Image generation path ─────────────────────────────────────────────
@@ -1529,6 +1658,28 @@ export default function Chat() {
     chatStatusRef.current = chat.status;
     chatSetMessagesRef.current = chat.setMessages;
   });
+
+  // ── Detect [ACTION_PLAN:] sentinel in completed assistant messages ────────
+  // When streaming finishes and the last assistant message contains the
+  // confirmation sentinel, extract the plan and show the confirm modal.
+  useEffect(() => {
+    if (chat.status !== "ready") return;
+    if (!requireConfirmRef.current || dryRunRef.current) return;
+    if (pendingConfirm) return; // already showing modal
+    const lastAssistant = [...chat.messages].reverse().find((m) => m.role === "assistant");
+    if (!lastAssistant) return;
+    const content = lastAssistant.parts
+      ? lastAssistant.parts.filter((p) => p.type === "text").map((p) => ("text" in p ? p.text : "")).join("")
+      : (lastAssistant as unknown as { content?: string }).content ?? "";
+    const match = content.match(/\[ACTION_PLAN:\s*([^\]]+)\]\s*(\{[\s\S]*?\})?/);
+    if (!match) return;
+    const toolName = match[1].trim();
+    const argsJson = match[2]?.trim() ?? "{}";
+    if (ACTIONS_REQUIRING_CONFIRM.has(toolName)) {
+      setPendingConfirm({ msgId: lastAssistant.id, toolName, argsJson });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chat.status, chat.messages]);
 
   // ── Compute cost when streaming finishes ─────────────────────────────────
   const prevStatusRef = useRef(chat.status);
@@ -2245,6 +2396,22 @@ export default function Chat() {
     window.addEventListener("pointerdown", onPointerDown);
     return () => window.removeEventListener("pointerdown", onPointerDown);
   }, [exportMenuOpen]);
+
+  // Close templates popover on outside click
+  useEffect(() => {
+    if (!templatesOpen) return;
+    function onPointerDown(e: PointerEvent) {
+      if (templatesRef.current && !templatesRef.current.contains(e.target as Node)) {
+        setTemplatesOpen(false);
+        setTemplateEditOpen(false);
+      }
+    }
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [templatesOpen]);
+
+  // Persist templates changes
+  useEffect(() => { saveTemplates(templates); }, [templates]);
 
   // Close context badge popover on outside click
   useEffect(() => {
@@ -3631,6 +3798,16 @@ export default function Chat() {
                     </div>
                   )}
 
+                  {/* Dry-run active banner */}
+                  {dryRun && (
+                    <div className="mx-auto max-w-2xl mb-2 flex items-center gap-1.5 rounded-md border border-amber-400/40 bg-amber-50/60 dark:bg-amber-900/20 px-2.5 py-1">
+                      <Eye className="h-3 w-3 text-amber-600 shrink-0" />
+                      <span className="text-[11px] text-amber-700 dark:text-amber-400">
+                        Dry run active — agent will describe actions but not execute them
+                      </span>
+                    </div>
+                  )}
+
                   {/* Slash command autocomplete — shown above composer when input starts with / */}
                   {slashOpen && (() => {
                     const partial = input.slice(1).toLowerCase();
@@ -3730,6 +3907,137 @@ export default function Chat() {
                       }}
                     />
                     <div className="flex items-center gap-1 shrink-0">
+                      {/* Templates button */}
+                      <div className="relative" ref={templatesRef}>
+                        <button
+                          type="button"
+                          onClick={() => { setTemplatesOpen((o) => !o); setTemplateEditOpen(false); }}
+                          title="Prompt templates"
+                          aria-label="Prompt templates"
+                          className={cn(
+                            "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
+                            templatesOpen
+                              ? "bg-primary/15 text-primary"
+                              : "text-muted-foreground/60 hover:text-foreground hover:bg-muted"
+                          )}
+                        >
+                          <Layout className="h-4 w-4" />
+                        </button>
+                        {templatesOpen && (
+                          <div className="absolute bottom-10 right-0 z-50 w-64 rounded-xl border border-border bg-card shadow-lg overflow-hidden">
+                            {!templateEditOpen ? (
+                              <>
+                                <div className="flex items-center justify-between px-3 py-2 border-b border-border/60">
+                                  <span className="text-[11px] font-semibold text-foreground/70 uppercase tracking-wide">Templates</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setTemplateDraft({ id: "", name: "", content: "" }); setTemplateEditOpen(true); }}
+                                    className="text-[11px] text-primary hover:opacity-80 transition-opacity"
+                                  >+ New</button>
+                                </div>
+                                <div className="max-h-52 overflow-y-auto">
+                                  {templates.map((t) => (
+                                    <div key={t.id} className="group flex items-center gap-1 border-b border-border/30 last:border-b-0">
+                                      <button
+                                        type="button"
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+                                          const applied = applyTemplate(t.content, input);
+                                          setInput(applied);
+                                          setTemplatesOpen(false);
+                                          setTimeout(() => textareaRef.current?.focus(), 0);
+                                        }}
+                                        className="flex-1 text-left px-3 py-2 hover:bg-muted/60 transition-colors"
+                                      >
+                                        <p className="text-xs font-medium text-foreground truncate">{t.name}</p>
+                                        <p className="text-[10px] text-muted-foreground truncate">{t.content.slice(0, 48)}{t.content.length > 48 ? "…" : ""}</p>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => { setTemplateDraft(t); setTemplateEditOpen(true); }}
+                                        className="opacity-0 group-hover:opacity-100 mr-2 text-muted-foreground/60 hover:text-foreground transition-all"
+                                        title="Edit template"
+                                        aria-label="Edit template"
+                                      >
+                                        <Pencil className="h-3 w-3" />
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              </>
+                            ) : (
+                              <div className="p-3 flex flex-col gap-2">
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-[11px] font-semibold text-foreground/70 uppercase tracking-wide">
+                                    {templateDraft.id ? "Edit" : "New"} Template
+                                  </span>
+                                  <button type="button" onClick={() => setTemplateEditOpen(false)} className="text-muted-foreground/60 hover:text-foreground">
+                                    <X className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                                <input
+                                  type="text"
+                                  placeholder="Template name"
+                                  value={templateDraft.name}
+                                  onChange={(e) => setTemplateDraft((d) => ({ ...d, name: e.target.value }))}
+                                  className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50"
+                                />
+                                <textarea
+                                  placeholder={"Template text… use {{selection}} to insert current input"}
+                                  value={templateDraft.content}
+                                  onChange={(e) => setTemplateDraft((d) => ({ ...d, content: e.target.value }))}
+                                  rows={4}
+                                  className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50 resize-none"
+                                />
+                                <div className="flex gap-1 justify-end">
+                                  {templateDraft.id && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setTemplates((ts) => ts.filter((t) => t.id !== templateDraft.id));
+                                        setTemplateEditOpen(false);
+                                      }}
+                                      className="rounded px-2 py-1 text-[11px] text-destructive/70 hover:text-destructive hover:bg-destructive/10 transition-colors"
+                                    >Delete</button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    disabled={!templateDraft.name.trim() || !templateDraft.content.trim()}
+                                    onClick={() => {
+                                      if (!templateDraft.name.trim() || !templateDraft.content.trim()) return;
+                                      if (templateDraft.id) {
+                                        setTemplates((ts) => ts.map((t) => t.id === templateDraft.id ? templateDraft : t));
+                                      } else {
+                                        setTemplates((ts) => [...ts, { ...templateDraft, id: `t${Date.now()}` }]);
+                                      }
+                                      setTemplateEditOpen(false);
+                                    }}
+                                    className="rounded px-2 py-1 text-[11px] bg-primary text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-40"
+                                  >Save</button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Dry-run toggle */}
+                      <button
+                        type="button"
+                        onClick={() => setDryRun((v) => !v)}
+                        title={dryRun ? "Dry run ON — click to disable" : "Dry run OFF — click to enable"}
+                        aria-label="Toggle dry-run mode"
+                        aria-pressed={dryRun}
+                        className={cn(
+                          "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
+                          dryRun
+                            ? "bg-amber-100 text-amber-600 dark:bg-amber-900/40 dark:text-amber-400"
+                            : "text-muted-foreground/60 hover:text-foreground hover:bg-muted"
+                        )}
+                      >
+                        {dryRun ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+                      </button>
+
                       <FileDropzone
                         jwt={jwt}
                         tier={tier}
@@ -3884,6 +4192,88 @@ export default function Chat() {
           </>
         );
       })()}
+
+      {/* Action confirmation modal — Feature 1 */}
+      {pendingConfirm && (
+        <>
+          <div
+            className="fixed inset-0 z-50 bg-foreground/30 backdrop-blur-[2px]"
+            aria-hidden
+            onClick={() => {
+              setPendingConfirm(null);
+              hasSentThisSessionRef.current = true;
+              chat.sendMessage({ text: "[CANCEL]" });
+            }}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Confirm agent action"
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          >
+            <div className="w-full max-w-md rounded-2xl border border-border bg-card shadow-xl overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center gap-3 px-5 py-4 border-b border-border/60">
+                <span className="text-lg" aria-hidden>
+                  {pendingConfirm.toolName === "gmail_send" ? "📧"
+                    : pendingConfirm.toolName === "slack_post_message" ? "💬"
+                    : pendingConfirm.toolName === "github_create_issue" ? "🐙"
+                    : pendingConfirm.toolName === "linear_create_issue" ? "📋"
+                    : pendingConfirm.toolName === "notion_create_page" ? "📄"
+                    : pendingConfirm.toolName === "calendar_create_event" ? "📅"
+                    : "🔧"}
+                </span>
+                <div>
+                  <p className="text-sm font-semibold text-foreground">
+                    {pendingConfirm.toolName === "gmail_send" ? "Send Gmail"
+                      : pendingConfirm.toolName === "slack_post_message" ? "Post Slack Message"
+                      : pendingConfirm.toolName === "github_create_issue" ? "Create GitHub Issue"
+                      : pendingConfirm.toolName === "linear_create_issue" ? "Create Linear Issue"
+                      : pendingConfirm.toolName === "notion_create_page" ? "Create Notion Page"
+                      : pendingConfirm.toolName === "calendar_create_event" ? "Create Calendar Event"
+                      : pendingConfirm.toolName}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground">Agent wants to take this action on your behalf</p>
+                </div>
+              </div>
+              {/* Args preview */}
+              <div className="px-5 py-3">
+                <pre className="rounded-lg bg-muted/60 border border-border/40 px-3 py-2 text-[11px] font-mono text-foreground/80 overflow-x-auto whitespace-pre-wrap break-all max-h-40">
+                  {(() => {
+                    try { return JSON.stringify(JSON.parse(pendingConfirm.argsJson), null, 2); }
+                    catch { return pendingConfirm.argsJson; }
+                  })()}
+                </pre>
+              </div>
+              {/* Footer */}
+              <div className="flex gap-2 px-5 pb-5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPendingConfirm(null);
+                    hasSentThisSessionRef.current = true;
+                    chat.sendMessage({ text: "[CANCEL]" });
+                  }}
+                  className="flex-1 rounded-full border border-border bg-background px-4 py-2 text-sm text-foreground hover:bg-muted transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPendingConfirm(null);
+                    hasSentThisSessionRef.current = true;
+                    chat.sendMessage({ text: "[PROCEED]" });
+                  }}
+                  className="flex-1 rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 transition-opacity"
+                >
+                  Approve &amp; send
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Pro welcome modal — shown once after checkout return */}
       {showProWelcome && (
