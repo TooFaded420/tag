@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Building2, Check, ChevronDown, Plus, UserPlus, X } from "lucide-react";
+import { Building2, Check, ChevronDown, Copy, Link2, Plus, UserPlus, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -19,6 +19,12 @@ interface Workspace {
   name: string;
   role: "workspace_admin" | "member";
   created_at: string;
+}
+
+interface InviteResult {
+  token: string;
+  invite_url: string;
+  expires_at: string;
 }
 
 // ── Props ─────────────────────────────────────────────────────────────────────
@@ -54,6 +60,15 @@ export function WorkspaceSwitcher({ jwt, activeWorkspaceId, onChange }: Props) {
   const [joinToken, setJoinToken] = useState("");
   const [joinLoading, setJoinLoading] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
+
+  // Generate invite inline state — keyed by workspace id
+  const [invitingWsId, setInvitingWsId] = useState<string | null>(null);
+  const [inviteRole, setInviteRole] = useState<"member" | "workspace_admin">("member");
+  const [inviteTtl, setInviteTtl] = useState<7 | 30 | 90>(7);
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteResult, setInviteResult] = useState<InviteResult | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -151,6 +166,52 @@ export function WorkspaceSwitcher({ jwt, activeWorkspaceId, onChange }: Props) {
     }
   }
 
+  function openInvitePanel(wsId: string) {
+    setInvitingWsId(wsId);
+    setInviteRole("member");
+    setInviteTtl(7);
+    setInviteResult(null);
+    setInviteError(null);
+    setCopied(false);
+    // close other panels
+    setCreating(false);
+    setJoining(false);
+  }
+
+  function closeInvitePanel() {
+    setInvitingWsId(null);
+    setInviteResult(null);
+    setInviteError(null);
+    setCopied(false);
+  }
+
+  async function handleGenerateInvite() {
+    if (!invitingWsId || !jwt) return;
+    setInviteLoading(true);
+    setInviteError(null);
+    setInviteResult(null);
+    try {
+      const result = (await callFn({
+        action: "create_invite",
+        workspace_id: invitingWsId,
+        role: inviteRole,
+        ttl_days: inviteTtl,
+      })) as InviteResult;
+      setInviteResult(result);
+    } catch (err) {
+      setInviteError((err as Error).message ?? "Could not create invite. Try again.");
+    } finally {
+      setInviteLoading(false);
+    }
+  }
+
+  function handleCopy(url: string) {
+    navigator.clipboard.writeText(url).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
   // ── Derived label ───────────────────────────────────────────────────────────
 
   const activeWs = workspaces.find((w) => w.id === activeWorkspaceId);
@@ -183,7 +244,7 @@ export function WorkspaceSwitcher({ jwt, activeWorkspaceId, onChange }: Props) {
 
       {/* Dropdown */}
       {open && (
-        <div className="absolute left-0 top-full mt-1.5 z-50 w-56 rounded-xl border border-border bg-card shadow-xl overflow-hidden">
+        <div className="absolute left-0 top-full mt-1.5 z-50 w-64 rounded-xl border border-border bg-card shadow-xl overflow-hidden">
           {/* Header */}
           <div className="px-3 pt-2.5 pb-1">
             <span className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground/50">
@@ -215,32 +276,154 @@ export function WorkspaceSwitcher({ jwt, activeWorkspaceId, onChange }: Props) {
           ) : (
             workspaces.map((ws) => {
               const isActive = activeWorkspaceId === ws.id;
+              const isAdmin = ws.role === "workspace_admin";
+              const isInviting = invitingWsId === ws.id;
+
               return (
-                <button
-                  key={ws.id}
-                  type="button"
-                  role="option"
-                  aria-selected={isActive}
-                  onClick={() => handleSelect(ws.id)}
-                  className={cn(
-                    "w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors text-left",
-                    isActive
-                      ? "bg-primary/10 text-primary font-medium"
-                      : "text-foreground hover:bg-muted"
-                  )}
-                >
-                  <Building2 className="h-3.5 w-3.5 shrink-0 opacity-60" />
-                  <span className="flex-1 truncate">{ws.name}</span>
-                  <span className={cn(
-                    "rounded-full px-1.5 py-0.5 text-[9px] font-medium",
-                    ws.role === "workspace_admin"
-                      ? "bg-primary/15 text-primary"
-                      : "bg-muted text-muted-foreground"
+                <div key={ws.id}>
+                  {/* Workspace row */}
+                  <div className={cn(
+                    "flex items-center gap-1 px-3 py-1.5 text-xs transition-colors",
+                    isActive ? "bg-primary/10" : "hover:bg-muted"
                   )}>
-                    {ws.role === "workspace_admin" ? "admin" : "member"}
-                  </span>
-                  {isActive && <Check className="h-3 w-3 shrink-0" />}
-                </button>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={isActive}
+                      onClick={() => handleSelect(ws.id)}
+                      className={cn(
+                        "flex-1 flex items-center gap-2 text-left min-w-0",
+                        isActive ? "text-primary font-medium" : "text-foreground"
+                      )}
+                    >
+                      <Building2 className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                      <span className="flex-1 truncate">{ws.name}</span>
+                      <span className={cn(
+                        "rounded-full px-1.5 py-0.5 text-[9px] font-medium shrink-0",
+                        isAdmin
+                          ? "bg-primary/15 text-primary"
+                          : "bg-muted text-muted-foreground"
+                      )}>
+                        {isAdmin ? "admin" : "member"}
+                      </span>
+                      {isActive && <Check className="h-3 w-3 shrink-0" />}
+                    </button>
+
+                    {/* Invite button — admin only */}
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        title="Generate invite link"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          isInviting ? closeInvitePanel() : openInvitePanel(ws.id);
+                        }}
+                        className={cn(
+                          "shrink-0 rounded p-1 transition-colors",
+                          isInviting
+                            ? "text-primary bg-primary/10"
+                            : "text-muted-foreground/50 hover:text-primary hover:bg-primary/10"
+                        )}
+                      >
+                        <Link2 className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Invite panel — inline expanded below the row */}
+                  {isInviting && (
+                    <div className="mx-2 mb-2 rounded-lg border border-border/70 bg-background px-3 py-2.5 space-y-2">
+                      {inviteResult ? (
+                        /* ── Result state ── */
+                        <div className="space-y-1.5">
+                          <p className="text-[10px] font-medium text-foreground">Invite link</p>
+                          <div className="flex items-center gap-1">
+                            <input
+                              readOnly
+                              value={inviteResult.invite_url}
+                              className="flex-1 min-w-0 rounded border border-border bg-muted px-2 py-1 text-[10px] text-foreground font-mono focus:outline-none"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(inviteResult.invite_url)}
+                              className={cn(
+                                "shrink-0 rounded px-2 py-1 text-[10px] font-medium transition-colors",
+                                copied
+                                  ? "bg-green-500/15 text-green-700 dark:text-green-400"
+                                  : "bg-primary/10 text-primary hover:bg-primary/20"
+                              )}
+                            >
+                              {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                            </button>
+                          </div>
+                          <p className="text-[10px] text-muted-foreground">
+                            Expires: {new Date(inviteResult.expires_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={closeInvitePanel}
+                            className="rounded px-2 py-1 text-[10px] font-medium bg-muted text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors"
+                          >
+                            Done
+                          </button>
+                        </div>
+                      ) : (
+                        /* ── Form state ── */
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            {/* Role dropdown */}
+                            <div className="flex-1 space-y-0.5">
+                              <label className="text-[9px] uppercase tracking-widest text-muted-foreground/50 font-mono">Role</label>
+                              <select
+                                value={inviteRole}
+                                onChange={(e) => setInviteRole(e.target.value as "member" | "workspace_admin")}
+                                disabled={inviteLoading}
+                                className="w-full rounded border border-border bg-background px-2 py-1 text-[10px] text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40 disabled:opacity-50"
+                              >
+                                <option value="member">Member</option>
+                                <option value="workspace_admin">Workspace admin</option>
+                              </select>
+                            </div>
+                            {/* TTL dropdown */}
+                            <div className="flex-1 space-y-0.5">
+                              <label className="text-[9px] uppercase tracking-widest text-muted-foreground/50 font-mono">Expires</label>
+                              <select
+                                value={inviteTtl}
+                                onChange={(e) => setInviteTtl(Number(e.target.value) as 7 | 30 | 90)}
+                                disabled={inviteLoading}
+                                className="w-full rounded border border-border bg-background px-2 py-1 text-[10px] text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40 disabled:opacity-50"
+                              >
+                                <option value={7}>7 days</option>
+                                <option value={30}>30 days</option>
+                                <option value={90}>90 days</option>
+                              </select>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={handleGenerateInvite}
+                              disabled={inviteLoading}
+                              className="flex-1 rounded px-2 py-1 text-[10px] font-medium bg-primary/10 text-primary hover:bg-primary/20 disabled:opacity-50 transition-colors"
+                            >
+                              {inviteLoading ? "Generating…" : "Generate invite link"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={closeInvitePanel}
+                              className="rounded p-1 text-muted-foreground/50 hover:text-foreground hover:bg-muted transition-colors"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </div>
+                          {inviteError && (
+                            <p className="text-[10px] text-destructive leading-tight">{inviteError}</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               );
             })
           )}
@@ -288,7 +471,7 @@ export function WorkspaceSwitcher({ jwt, activeWorkspaceId, onChange }: Props) {
           ) : (
             <button
               type="button"
-              onClick={() => { setCreating(true); setJoining(false); }}
+              onClick={() => { setCreating(true); setJoining(false); closeInvitePanel(); }}
               className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
             >
               <Plus className="h-3.5 w-3.5 shrink-0" />
@@ -335,7 +518,7 @@ export function WorkspaceSwitcher({ jwt, activeWorkspaceId, onChange }: Props) {
           ) : (
             <button
               type="button"
-              onClick={() => { setJoining(true); setCreating(false); }}
+              onClick={() => { setJoining(true); setCreating(false); closeInvitePanel(); }}
               className="w-full flex items-center gap-2 px-3 py-1.5 pb-2.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
             >
               <UserPlus className="h-3.5 w-3.5 shrink-0" />
