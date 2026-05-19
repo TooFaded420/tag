@@ -18,13 +18,21 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 // Tier-based model whitelists
 // ─────────────────────────────────────────────────────────────────────────────
 const ANON_MODELS = new Set(["hf:openai/gpt-oss-120b"]);
-const FREE_MODELS = new Set([...ANON_MODELS, "hf:zai-org/GLM-4.7-Flash"]);
+const FREE_MODELS = new Set([
+  ...ANON_MODELS,
+  "hf:zai-org/GLM-4.7-Flash",
+  // TODO: Verify synthetic.new slug + actual pricing — these are best-guess based on common naming. Update once verified against dev.synthetic.new/docs/models.
+  "hf:Qwen/Qwen3.2-72B-Instruct",
+  "hf:deepseek-ai/DeepSeek-V3.5",
+]);
 const PRO_MODELS = new Set([
   ...FREE_MODELS,
   "hf:moonshotai/Kimi-K2.6",
   "hf:zai-org/GLM-5.1",
   "hf:MiniMaxAI/MiniMax-M2.5",
   "hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
+  "hf:meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+  "hf:mistralai/Mistral-Large-2.4",
 ]);
 
 // Premium models consume the premium_msg_count quota bucket
@@ -33,6 +41,8 @@ const PREMIUM_MODELS = new Set([
   "hf:zai-org/GLM-5.1",
   "hf:MiniMaxAI/MiniMax-M2.5",
   "hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
+  "hf:meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+  "hf:mistralai/Mistral-Large-2.4",
 ]);
 
 // Daily limits per tier: { msg, premium }

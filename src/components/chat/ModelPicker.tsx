@@ -63,6 +63,39 @@ export const MODELS: ModelOption[] = [
     description: "Nvidia 120B for coding agents. 262k context.",
     pricing: "$0.30/M in, $1.00/M out",
   },
+  // TODO: Verify synthetic.new slug + actual pricing — these are best-guess based on common naming. Update once verified against dev.synthetic.new/docs/models.
+  {
+    id: "hf:Qwen/Qwen3.2-72B-Instruct",
+    label: "Qwen 3.2 72B",
+    provider: "synthetic",
+    tier: "free",
+    description: "Qwen 3.2 72B Instruct. Balanced performance. 32k context.",
+    pricing: "$0.40/M in, $0.80/M out",
+  },
+  {
+    id: "hf:meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+    label: "Llama 4 Maverick",
+    provider: "synthetic",
+    tier: "pro",
+    description: "Meta Llama 4 Maverick MoE. 128k context. Premium.",
+    pricing: "$0.60/M in, $1.20/M out",
+  },
+  {
+    id: "hf:deepseek-ai/DeepSeek-V3.5",
+    label: "DeepSeek V3.5",
+    provider: "synthetic",
+    tier: "free",
+    description: "DeepSeek V3.5. Strong coding + reasoning. 64k context.",
+    pricing: "$0.30/M in, $0.60/M out",
+  },
+  {
+    id: "hf:mistralai/Mistral-Large-2.4",
+    label: "Mistral Large 2.4",
+    provider: "synthetic",
+    tier: "pro",
+    description: "Mistral Large 2.4. Strong multilingual + instruction. 128k context.",
+    pricing: "$0.80/M in, $2.40/M out",
+  },
   // Image models — fal.ai FLUX (wired in synthetic-image-proxy v2)
   {
     id: "fal:flux/schnell",

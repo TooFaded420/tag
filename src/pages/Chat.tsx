@@ -201,6 +201,11 @@ const MODEL_COSTS: Record<string, { in: number; out: number }> = {
   "hf:zai-org/GLM-5.1":        { in: 1.0,  out: 3.0 },
   "hf:MiniMaxAI/MiniMax-M2.5": { in: 0.4,  out: 2.0 },
   "hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4": { in: 0.3, out: 1.0 },
+  // TODO: Verify synthetic.new slug + actual pricing — these are best-guess based on common naming. Update once verified against dev.synthetic.new/docs/models.
+  "hf:Qwen/Qwen3.2-72B-Instruct":                     { in: 0.4,  out: 0.8  },
+  "hf:meta-llama/Llama-4-Maverick-17B-128E-Instruct":  { in: 0.6,  out: 1.2  },
+  "hf:deepseek-ai/DeepSeek-V3.5":                      { in: 0.3,  out: 0.6  },
+  "hf:mistralai/Mistral-Large-2.4":                     { in: 0.8,  out: 2.4  },
 };
 
 // Context window sizes per model (in tokens)
@@ -214,6 +219,10 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "hf:zai-org/GLM-4.7-Flash":   131072,
   "hf:MiniMaxAI/MiniMax-M2.5":  40960,
   "hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4": 262000,
+  "hf:Qwen/Qwen3.2-72B-Instruct":                      32000,
+  "hf:meta-llama/Llama-4-Maverick-17B-128E-Instruct":   128000,
+  "hf:deepseek-ai/DeepSeek-V3.5":                       64000,
+  "hf:mistralai/Mistral-Large-2.4":                      128000,
 };
 const DEFAULT_CONTEXT_WINDOW = 32000;
 
