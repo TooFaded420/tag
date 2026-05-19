@@ -5,8 +5,8 @@
  * Outcome badge colours: green=approved, blue=auto, gray=dry_run|cancelled, red=failed.
  */
 
-import { useCallback, useEffect, useState } from "react";
-import { Activity, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Activity, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, RefreshCw, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
@@ -47,6 +47,26 @@ const TOOL_EMOJIS: Record<string, string> = {
   web_search:           "🔍",
 };
 
+const OUTCOME_CHIPS = ["All", "Approved", "Cancelled", "Dry-run", "Auto", "Failed"] as const;
+type OutcomeChip = typeof OUTCOME_CHIPS[number];
+
+const CHIP_TO_OUTCOME: Record<OutcomeChip, string | null> = {
+  All:       null,
+  Approved:  "approved",
+  Cancelled: "cancelled",
+  "Dry-run": "dry_run",
+  Auto:      "auto",
+  Failed:    "failed",
+};
+
+type DateRange = "all" | "1h" | "24h" | "7d";
+const DATE_RANGE_OPTIONS: { label: string; value: DateRange }[] = [
+  { label: "All time",   value: "all" },
+  { label: "Last hour",  value: "1h" },
+  { label: "Last 24h",   value: "24h" },
+  { label: "Last 7d",    value: "7d" },
+];
+
 function relativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.floor(diff / 60_000);
@@ -57,12 +77,26 @@ function relativeTime(iso: string): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
+function dateRangeCutoff(range: DateRange): number | null {
+  if (range === "all") return null;
+  const ms = { "1h": 60 * 60_000, "24h": 24 * 60 * 60_000, "7d": 7 * 24 * 60 * 60_000 }[range];
+  return Date.now() - ms;
+}
+
 export function AgentActivityLog({ jwt }: AgentActivityLogProps) {
   const [expanded, setExpanded] = useState(false);
   const [entries, setEntries] = useState<ToolCallEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [error, setError] = useState(false);
+
+  // Filter state
+  const [selectedOutcomes, setSelectedOutcomes] = useState<Set<OutcomeChip>>(new Set(["All"]));
+  const [toolSearch, setToolSearch] = useState("");
+  const [dateRange, setDateRange] = useState<DateRange>("all");
+
+  // Expand-all state
+  const [allExpanded, setAllExpanded] = useState(false);
 
   const load = useCallback(async () => {
     if (!jwt) return;
@@ -97,6 +131,76 @@ export function AgentActivityLog({ jwt }: AgentActivityLogProps) {
     if (expanded && jwt) void load();
   }, [expanded, jwt, load]);
 
+  // Derived: filtered entries
+  const filteredEntries = useMemo(() => {
+    const cutoff = dateRangeCutoff(dateRange);
+    return entries.filter((entry) => {
+      // Outcome filter
+      if (!selectedOutcomes.has("All")) {
+        const matched = [...selectedOutcomes].some(
+          (chip) => CHIP_TO_OUTCOME[chip] === entry.outcome,
+        );
+        if (!matched) return false;
+      }
+      // Tool name filter
+      if (toolSearch.trim() !== "") {
+        if (!entry.tool.toLowerCase().includes(toolSearch.trim().toLowerCase())) return false;
+      }
+      // Date range filter
+      if (cutoff !== null) {
+        if (new Date(entry.created_at).getTime() < cutoff) return false;
+      }
+      return true;
+    });
+  }, [entries, selectedOutcomes, toolSearch, dateRange]);
+
+  const isFiltered =
+    !selectedOutcomes.has("All") ||
+    toolSearch.trim() !== "" ||
+    dateRange !== "all";
+
+  function clearFilters() {
+    setSelectedOutcomes(new Set(["All"]));
+    setToolSearch("");
+    setDateRange("all");
+  }
+
+  function toggleOutcomeChip(chip: OutcomeChip) {
+    setSelectedOutcomes((prev) => {
+      const next = new Set(prev);
+      if (chip === "All") {
+        return new Set(["All"]);
+      }
+      next.delete("All");
+      if (next.has(chip)) {
+        next.delete(chip);
+        if (next.size === 0) return new Set(["All"]);
+      } else {
+        next.add(chip);
+      }
+      return next;
+    });
+  }
+
+  // When expand-all toggles, set expandedId or clear it via a sentinel
+  const expandedIds = useMemo<Set<string>>(() => {
+    if (allExpanded) return new Set(filteredEntries.map((e) => e.id));
+    return new Set(expandedId ? [expandedId] : []);
+  }, [allExpanded, filteredEntries, expandedId]);
+
+  function handleEntryToggle(id: string) {
+    if (allExpanded) {
+      // Switch to individual mode, collapse this one
+      const remaining = new Set(filteredEntries.map((e) => e.id));
+      remaining.delete(id);
+      // We can't store a full set easily with existing state — simplest: turn off expand-all
+      setAllExpanded(false);
+      setExpandedId(null);
+    } else {
+      setExpandedId((prev) => (prev === id ? null : id));
+    }
+  }
+
   if (!jwt) return null;
 
   return (
@@ -120,8 +224,21 @@ export function AgentActivityLog({ jwt }: AgentActivityLogProps) {
 
       {expanded && (
         <div className="px-3 pb-3 space-y-1.5">
-          {/* Refresh button */}
-          <div className="flex justify-end">
+          {/* Top row: Refresh + Expand-all */}
+          <div className="flex items-center justify-between">
+            <button
+              type="button"
+              onClick={() => setAllExpanded((v) => !v)}
+              className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+              title={allExpanded ? "Collapse all" : "Expand all"}
+            >
+              {allExpanded ? (
+                <ChevronsDownUp className="h-3 w-3" />
+              ) : (
+                <ChevronsUpDown className="h-3 w-3" />
+              )}
+              {allExpanded ? "Collapse all" : "Expand all"}
+            </button>
             <button
               type="button"
               onClick={load}
@@ -132,6 +249,67 @@ export function AgentActivityLog({ jwt }: AgentActivityLogProps) {
               Refresh
             </button>
           </div>
+
+          {/* Outcome chips */}
+          <div className="flex flex-wrap gap-1">
+            {OUTCOME_CHIPS.map((chip) => {
+              const active = selectedOutcomes.has(chip);
+              return (
+                <button
+                  key={chip}
+                  type="button"
+                  onClick={() => toggleOutcomeChip(chip)}
+                  className={cn(
+                    "px-1.5 py-0.5 rounded text-[9px] font-medium uppercase tracking-wide transition-colors",
+                    active
+                      ? "bg-foreground/10 text-foreground ring-1 ring-foreground/20"
+                      : "bg-muted/50 text-muted-foreground hover:bg-muted",
+                  )}
+                >
+                  {chip}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Tool name filter + date range */}
+          <div className="flex gap-1.5">
+            <input
+              type="text"
+              value={toolSearch}
+              onChange={(e) => setToolSearch(e.target.value)}
+              placeholder="Filter by tool…"
+              className="flex-1 min-w-0 rounded border border-border/40 bg-muted/30 px-2 py-0.5 text-[10px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            <select
+              value={dateRange}
+              onChange={(e) => setDateRange(e.target.value as DateRange)}
+              className="rounded border border-border/40 bg-muted/30 px-1.5 py-0.5 text-[10px] text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              {DATE_RANGE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Result count + clear filters */}
+          {isFiltered && entries.length > 0 && (
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-muted-foreground">
+                {filteredEntries.length} of {entries.length} calls
+              </span>
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X className="h-2.5 w-2.5" />
+                Clear filters
+              </button>
+            </div>
+          )}
 
           {loading && entries.length === 0 ? (
             <div className="space-y-1.5">
@@ -147,19 +325,23 @@ export function AgentActivityLog({ jwt }: AgentActivityLogProps) {
             <p className="text-[10px] text-muted-foreground/50 text-center py-2">
               No tool calls yet.
             </p>
+          ) : filteredEntries.length === 0 ? (
+            <p className="text-[10px] text-muted-foreground/50 text-center py-2">
+              No calls match the current filters.
+            </p>
           ) : (
             <ul className="space-y-0.5">
-              {entries.map((entry) => {
+              {filteredEntries.map((entry) => {
                 const emoji = TOOL_EMOJIS[entry.tool] ?? "🔧";
                 const outcomeColor = OUTCOME_COLORS[entry.outcome] ?? OUTCOME_COLORS.auto;
-                const isOpen = expandedId === entry.id;
+                const isOpen = expandedIds.has(entry.id);
                 const argsStr = JSON.stringify(entry.args, null, 2);
 
                 return (
                   <li key={entry.id} className="rounded-md border border-border/40 bg-muted/20 overflow-hidden">
                     <button
                       type="button"
-                      onClick={() => setExpandedId(isOpen ? null : entry.id)}
+                      onClick={() => handleEntryToggle(entry.id)}
                       className="w-full flex items-start gap-2 px-2 py-1.5 text-left hover:bg-muted/40 transition-colors"
                     >
                       <span className="shrink-0 text-[13px] mt-0.5">{emoji}</span>

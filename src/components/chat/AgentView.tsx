@@ -19,6 +19,7 @@ import {
   Loader2,
   Search,
   Send,
+  Square,
   Terminal,
   XCircle,
 } from "lucide-react";
@@ -210,7 +211,8 @@ type AgentItem =
   | { kind: "user"; id: string; text: string }
   | { kind: "tool_call"; id: string; block: ToolCallBlock }
   | { kind: "assistant"; id: string; text: string }
-  | { kind: "thinking"; id: string };
+  | { kind: "thinking"; id: string; label?: string }
+  | { kind: "error"; id: string; text: string; retryText: string };
 
 // Internal conversation history sent to the model
 interface ConvMessage {
@@ -235,9 +237,16 @@ async function callTool(
   tool: string,
   args: Record<string, unknown>,
   jwt: string,
-  timeout_s = 30
+  timeout_s = 30,
+  abortSignal?: AbortSignal
 ): Promise<{ ok: true; result: string } | { ok: false; code: string; message: string }> {
   try {
+    // Combine the 80s timeout signal with the optional external abort signal
+    const timeoutSignal = AbortSignal.timeout(80_000);
+    const signal = abortSignal
+      ? AbortSignal.any([timeoutSignal, abortSignal])
+      : timeoutSignal;
+
     const res = await fetch(`${SUPABASE_URL}/functions/v1/tag-agent-tool`, {
       method: "POST",
       headers: {
@@ -254,7 +263,7 @@ async function callTool(
         // if dry_run=true were ever passed. Confirmation gate also applies server-side.
         dry_run: false,
       }),
-      signal: AbortSignal.timeout(80_000),
+      signal,
     });
 
     const data = await res.json().catch(() => ({}));
@@ -275,6 +284,9 @@ async function callTool(
 
     return { ok: true, result };
   } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return { ok: false, code: "aborted", message: "Stopped by user." };
+    }
     if (err instanceof DOMException && err.name === "TimeoutError") {
       return { ok: false, code: "tool_timeout", message: "Tool call timed out after 80s." };
     }
@@ -317,10 +329,11 @@ interface ModelChoice {
 
 async function callModel(
   messages: ModelMessage[],
-  jwt: string
+  jwt: string,
+  abortSignal?: AbortSignal
 ): Promise<
   | { ok: true; content: string | null; tool_calls: ModelChoice["message"]["tool_calls"] }
-  | { ok: false; error: string }
+  | { ok: false; error: string; aborted?: boolean }
 > {
   try {
     const res = await fetch(`${SUPABASE_URL}/functions/v1/synthetic-public-proxy`, {
@@ -337,6 +350,7 @@ async function callModel(
         max_tokens: 4096,
         temperature: 0.2,
       }),
+      signal: abortSignal,
     });
 
     if (!res.ok) {
@@ -358,6 +372,9 @@ async function callModel(
       tool_calls: choice.message.tool_calls,
     };
   } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return { ok: false, error: "Stopped by user.", aborted: true };
+    }
     return {
       ok: false,
       error: err instanceof Error ? err.message : "Unknown error",
@@ -474,12 +491,16 @@ function ToolCallCard({ block, onToggle }: { block: ToolCallBlock; onToggle: () 
           </span>
         )}
 
-        {/* Duration badge */}
+        {/* Duration + cost badge */}
         {block.status === "done" && block.durationMs !== undefined && (
           <span className="ml-auto shrink-0 text-[10px] text-muted-foreground/60">
             {block.durationMs < 1000
               ? `${block.durationMs}ms`
               : `${(block.durationMs / 1000).toFixed(1)}s`}
+            {" · "}
+            {block.tool === "browser_navigate" || block.tool === "web_search"
+              ? "Composio"
+              : "sandbox"}
           </span>
         )}
 
@@ -625,6 +646,9 @@ export function AgentView({ jwt, tier, onUpgrade }: AgentViewProps) {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Abort controller ref — replaced each turn; .abort() stops the current loop
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   // Auto-scroll on new items
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -653,6 +677,14 @@ export function AgentView({ jwt, tier, onUpgrade }: AgentViewProps) {
     setItems((prev) => prev.filter((item) => item.id !== id));
   }, []);
 
+  const updateThinkingLabel = useCallback((thinkingId: string, label: string) => {
+    setItems((prev) =>
+      prev.map((item) =>
+        item.kind === "thinking" && item.id === thinkingId ? { ...item, label } : item
+      )
+    );
+  }, []);
+
   const toggleToolExpanded = useCallback((toolItemId: string) => {
     setItems((prev) =>
       prev.map((item) =>
@@ -663,11 +695,22 @@ export function AgentView({ jwt, tier, onUpgrade }: AgentViewProps) {
     );
   }, []);
 
+  // ── Stop handler ──────────────────────────────────────────────────────────
+
+  const handleStop = useCallback(() => {
+    abortControllerRef.current?.abort();
+  }, []);
+
   // ── Agent turn loop ───────────────────────────────────────────────────────
 
   const runAgentTurn = useCallback(
     async (userText: string) => {
       if (!jwt) return;
+
+      // Create a fresh AbortController for this turn
+      const ac = new AbortController();
+      abortControllerRef.current = ac;
+      const signal = ac.signal;
 
       setRunning(true);
 
@@ -679,7 +722,7 @@ export function AgentView({ jwt, tier, onUpgrade }: AgentViewProps) {
 
       // 2. Show "thinking" indicator
       const thinkingId = crypto.randomUUID();
-      appendItem({ kind: "thinking", id: thinkingId });
+      appendItem({ kind: "thinking", id: thinkingId, label: "Thinking…" });
 
       // 3. Agentic loop: call model → if tool_calls, dispatch → loop; else final answer
       const MAX_TOOL_ROUNDS = 20; // safety cap
@@ -687,6 +730,18 @@ export function AgentView({ jwt, tier, onUpgrade }: AgentViewProps) {
 
       // eslint-disable-next-line no-constant-condition
       while (true) {
+        // Check abort before each iteration
+        if (signal.aborted) {
+          removeItem(thinkingId);
+          appendItem({
+            kind: "error",
+            id: crypto.randomUUID(),
+            text: "Stopped by user.",
+            retryText: userText,
+          });
+          break;
+        }
+
         rounds++;
         if (rounds > MAX_TOOL_ROUNDS) {
           removeItem(thinkingId);
@@ -698,19 +753,33 @@ export function AgentView({ jwt, tier, onUpgrade }: AgentViewProps) {
           break;
         }
 
+        // Update progress label before model call
+        updateThinkingLabel(thinkingId, "Thinking…");
+
         // Call model
         const modelResult = await callModel(
           historyRef.current as ModelMessage[],
-          jwt
+          jwt,
+          signal
         );
 
         if (!modelResult.ok) {
           removeItem(thinkingId);
-          appendItem({
-            kind: "assistant",
-            id: crypto.randomUUID(),
-            text: `Error: ${modelResult.error}`,
-          });
+          if ((modelResult as { aborted?: boolean }).aborted) {
+            appendItem({
+              kind: "error",
+              id: crypto.randomUUID(),
+              text: "Stopped by user.",
+              retryText: userText,
+            });
+          } else {
+            appendItem({
+              kind: "error",
+              id: crypto.randomUUID(),
+              text: `Error: ${modelResult.error}`,
+              retryText: userText,
+            });
+          }
           break;
         }
 
@@ -770,11 +839,17 @@ export function AgentView({ jwt, tier, onUpgrade }: AgentViewProps) {
             // Short micro-delay so "queued" state is visible (~100ms)
             await new Promise((r) => setTimeout(r, 100));
 
+            // Check abort before dispatching
+            if (signal.aborted) {
+              updateToolBlock(toolItemId, { status: "error", errorCode: "aborted", errorMessage: "Stopped by user." });
+              return;
+            }
+
             // Update to running
             updateToolBlock(toolItemId, { status: "running" });
 
             const startMs = Date.now();
-            const toolResult = await callTool(tc.function.name, args, jwt, 60);
+            const toolResult = await callTool(tc.function.name, args, jwt, 60, signal);
             const durationMs = Date.now() - startMs;
 
             if (toolResult.ok) {
@@ -818,13 +893,25 @@ export function AgentView({ jwt, tier, onUpgrade }: AgentViewProps) {
           })
         );
 
+        // Check abort after tool round
+        if (signal.aborted) {
+          // thinkingId already removed above; just surface error
+          appendItem({
+            kind: "error",
+            id: crypto.randomUUID(),
+            text: "Stopped by user.",
+            retryText: userText,
+          });
+          break;
+        }
+
         // Re-add thinking indicator for next model call
-        appendItem({ kind: "thinking", id: thinkingId });
+        appendItem({ kind: "thinking", id: thinkingId, label: `Calling ${tool_calls.map((tc) => toolMeta(tc.function.name).label).join(", ")}…` });
       }
 
       setRunning(false);
     },
-    [jwt, appendItem, updateToolBlock, removeItem, onUpgrade]
+    [jwt, appendItem, updateToolBlock, removeItem, updateThinkingLabel, onUpgrade]
   );
 
   // ── Submit handler ─────────────────────────────────────────────────────────
@@ -892,14 +979,42 @@ export function AgentView({ jwt, tier, onUpgrade }: AgentViewProps) {
                       <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted border border-border/60">
                         <Terminal className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
                       </div>
-                      <div className="flex gap-1" aria-label="Thinking">
-                        {[0, 1, 2].map((i) => (
-                          <span
-                            key={i}
-                            className="h-1.5 w-1.5 rounded-full bg-primary/50 motion-safe:animate-bounce"
-                            style={{ animationDelay: `${i * 0.12}s` }}
-                          />
-                        ))}
+                      <div className="flex items-center gap-2" aria-label={item.label ?? "Thinking"}>
+                        <div className="flex gap-1">
+                          {[0, 1, 2].map((i) => (
+                            <span
+                              key={i}
+                              className="h-1.5 w-1.5 rounded-full bg-primary/50 motion-safe:animate-bounce"
+                              style={{ animationDelay: `${i * 0.12}s` }}
+                            />
+                          ))}
+                        </div>
+                        {item.label && (
+                          <span className="text-[11px] text-muted-foreground/60 motion-safe:animate-pulse">
+                            {item.label}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                }
+
+                if (item.kind === "error") {
+                  return (
+                    <div key={item.id} className="flex items-start gap-2.5">
+                      <div className="h-7 w-7 shrink-0 rounded-full bg-muted border border-border/60 flex items-center justify-center overflow-hidden mt-0.5">
+                        <XCircle className="h-3.5 w-3.5 text-destructive" aria-hidden />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-destructive/80 leading-relaxed">{item.text}</p>
+                        <button
+                          type="button"
+                          onClick={() => void runAgentTurn(item.retryText)}
+                          disabled={running}
+                          className="mt-1.5 text-[11px] text-muted-foreground/60 hover:text-foreground underline underline-offset-2 transition-colors disabled:opacity-30"
+                        >
+                          Retry
+                        </button>
                       </div>
                     </div>
                   );
@@ -954,7 +1069,7 @@ export function AgentView({ jwt, tier, onUpgrade }: AgentViewProps) {
             }}
             disabled={running}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey || !e.shiftKey)) {
                 e.preventDefault();
                 if (!canSend) return;
                 const trimmed = input.trim();
@@ -970,6 +1085,17 @@ export function AgentView({ jwt, tier, onUpgrade }: AgentViewProps) {
               <Terminal className="h-2.5 w-2.5" aria-hidden />
               Kimi K2.6
             </span>
+            {/* Stop button — only visible while running */}
+            {running && (
+              <button
+                type="button"
+                onClick={handleStop}
+                className="flex h-8 w-8 items-center justify-center rounded-lg border border-destructive/40 bg-destructive/10 text-destructive transition-opacity hover:opacity-90"
+                aria-label="Stop agent"
+              >
+                <Square className="h-3.5 w-3.5 fill-current" />
+              </button>
+            )}
             <button
               type="submit"
               disabled={!canSend}

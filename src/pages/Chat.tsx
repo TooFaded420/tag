@@ -479,7 +479,7 @@ function writeMemory(content: string, jwt: string, workspaceId?: string | null):
 }
 
 // ---------------------------------------------------------------------------
-// EmptyState — spray-paint motif
+// EmptyState — rich welcome with templates, tips, model info
 // ---------------------------------------------------------------------------
 
 const STARTER_PROMPTS = [
@@ -489,6 +489,14 @@ const STARTER_PROMPTS = [
   "Compare React vs Vue",
   "Write a haiku about shipping",
   "Summarize a topic for me",
+];
+
+const PRO_TIPS = [
+  "⌘K — focus the composer from anywhere",
+  "⌘⇧O — open a new thread instantly",
+  "⌘⇧F — search across all conversations",
+  "/templates — insert a saved prompt snippet",
+  "Click any user message to edit and branch",
 ];
 
 // ---------------------------------------------------------------------------
@@ -509,62 +517,101 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { trigger: "/explain",     description: "Explain like I'm 16",             text: "Explain the previous assistant reply like I am a smart 16-year-old." },
 ];
 
+// Integration icons for the empty state row
+const INTEGRATION_ICONS: Array<{ slug: string; label: string; icon: string }> = [
+  { slug: "gmail",          label: "Gmail",    icon: "📧" },
+  { slug: "slack",          label: "Slack",    icon: "💬" },
+  { slug: "github",         label: "GitHub",   icon: "🐙" },
+  { slug: "linear",         label: "Linear",   icon: "📋" },
+  { slug: "notion",         label: "Notion",   icon: "📝" },
+  { slug: "googlecalendar", label: "Calendar", icon: "📅" },
+];
+
 interface EmptyStateProps {
   onPickPrompt: (prompt: string) => void;
+  templates: PromptTemplate[];
+  model: string;
+  temperature: number;
+  jwt: string | null;
+  onOpenTemp: () => void;
 }
 
-function EmptyState({ onPickPrompt }: EmptyStateProps) {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center py-16 select-none">
-      {/* Spray-paint splatter SVG — mauve + warm yellow */}
-      <svg
-        width="80"
-        height="80"
-        viewBox="0 0 80 80"
-        fill="none"
-        aria-hidden
-        className="mb-6 opacity-60"
-      >
-        {/* Central blob */}
-        <ellipse cx="40" cy="42" rx="18" ry="16" fill="#8B7DA8" opacity="0.25" />
-        <ellipse cx="40" cy="41" rx="11" ry="10" fill="#8B7DA8" opacity="0.45" />
-        {/* Splatter drops */}
-        <circle cx="22" cy="30" r="3.5" fill="#8B7DA8" opacity="0.3" />
-        <circle cx="58" cy="28" r="2.5" fill="#8B7DA8" opacity="0.25" />
-        <circle cx="62" cy="50" r="4" fill="#8B7DA8" opacity="0.2" />
-        <circle cx="18" cy="54" r="3" fill="#8B7DA8" opacity="0.2" />
-        <circle cx="32" cy="18" r="2" fill="#B0A3C4" opacity="0.4" />
-        <circle cx="52" cy="62" r="2.5" fill="#B0A3C4" opacity="0.35" />
-        {/* Cyan accent dots */}
-        <circle cx="66" cy="36" r="2" fill="#5EEAD4" opacity="0.5" />
-        <circle cx="14" cy="38" r="1.5" fill="#5EEAD4" opacity="0.4" />
-        <circle cx="44" cy="10" r="1.5" fill="#5EEAD4" opacity="0.35" />
-      </svg>
+function EmptyState({ onPickPrompt, templates, model, temperature, jwt, onOpenTemp }: EmptyStateProps) {
+  const [tipIndex, setTipIndex] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTipIndex((i) => (i + 1) % PRO_TIPS.length), 4000);
+    return () => clearInterval(t);
+  }, []);
 
-      <p
-        className="text-lg font-medium text-foreground"
+  const topTemplates = templates.slice(0, 3);
+  const modelName = MODELS.find((m) => m.id === model)?.name ?? model;
+
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center py-12 px-4 select-none">
+      {/* Heading */}
+      <h2
+        className="text-2xl font-semibold text-foreground text-center"
         style={{ fontFamily: "'Space Grotesk', sans-serif" }}
       >
-        Tag a model. Ask anything.
-      </p>
-      <p className="mt-2 text-xs text-muted-foreground">
+        What can I help with?
+      </h2>
+      <p className="mt-1.5 text-sm text-muted-foreground text-center">
         Free: 10 messages/day anonymous · 50/day signed in.
       </p>
 
-      {/* Starter prompt pills — set input but do not auto-send */}
-      <div className="mt-6 flex flex-wrap justify-center gap-2 max-w-lg px-4">
-        {STARTER_PROMPTS.map((prompt) => (
+      {/* Template suggestion buttons */}
+      <div className="mt-8 flex flex-col gap-2.5 w-full max-w-md">
+        {topTemplates.map((tpl) => (
           <button
-            key={prompt}
+            key={tpl.id}
             type="button"
-            onClick={() => onPickPrompt(prompt)}
-            className="rounded-full border border-primary/20 bg-primary/8 px-3 py-1.5 text-xs text-foreground hover:bg-primary/15 transition-colors"
-            style={{ fontFamily: "'JetBrains Mono', monospace" }}
+            onClick={() => onPickPrompt(tpl.content.replace(/\{\{selection\}\}|\{\{\}\}/g, ""))}
+            className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left text-sm text-foreground hover:bg-muted hover:border-primary/30 transition-colors group"
           >
-            {prompt}
+            <span className="flex-1 leading-snug">{tpl.name}</span>
+            <span className="text-muted-foreground/40 group-hover:text-primary/60 transition-colors text-xs">→</span>
           </button>
         ))}
       </div>
+
+      {/* Integrations row — only for signed-in users */}
+      {jwt && (
+        <div className="mt-8 flex flex-col items-center gap-2">
+          <p className="text-[11px] font-mono uppercase tracking-widest text-muted-foreground/50">Integrations</p>
+          <div className="flex items-center gap-2">
+            {INTEGRATION_ICONS.map(({ slug, label, icon }) => (
+              <div key={slug} className="relative group">
+                <div className="h-9 w-9 flex items-center justify-center rounded-lg border border-border bg-card text-base hover:border-primary/40 hover:bg-primary/5 transition-colors cursor-default">
+                  {icon}
+                </div>
+                <div className="absolute -top-7 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-foreground/90 px-1.5 py-0.5 text-[10px] text-background opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                  {label}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Model + temperature info */}
+      <div className="mt-8 flex items-center gap-2 text-xs text-muted-foreground">
+        <span className="font-mono">{modelName}</span>
+        <span className="text-muted-foreground/30">·</span>
+        <button
+          type="button"
+          onClick={onOpenTemp}
+          className="hover:text-foreground transition-colors"
+          title="Adjust temperature"
+        >
+          temp {temperature.toFixed(1)}
+        </button>
+      </div>
+
+      {/* Cycling pro tip */}
+      <p className="mt-4 text-[11px] text-muted-foreground/60 text-center transition-opacity">
+        <span className="font-medium text-muted-foreground/80">Pro tip:</span>{" "}
+        {PRO_TIPS[tipIndex]}
+      </p>
     </div>
   );
 }
@@ -895,10 +942,60 @@ export default function Chat() {
   const [presetsOpen, setPresetsOpen] = useState(false);
   const presetsRef = useRef<HTMLDivElement>(null);
 
+  // ── Smart notifications ──────────────────────────────────────────────────
+  const [notifUnseenCount, setNotifUnseenCount] = useState(0);
+  const originalTitleRef = useRef("Tag — Multi-Model Chat | hecz.dev");
+
+  // Reset unseen counter + restore title when the tab regains focus
+  useEffect(() => {
+    function onVisible() {
+      if (document.visibilityState === "visible") {
+        setNotifUnseenCount(0);
+        document.title = originalTitleRef.current;
+      }
+    }
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
+
+  // Fire notification when streaming finishes while tab is hidden
+  const prevStatusForNotifRef = useRef(chat.status ?? "ready");
+  useEffect(() => {
+    const wasStreaming =
+      prevStatusForNotifRef.current === "streaming" ||
+      prevStatusForNotifRef.current === "submitted";
+    prevStatusForNotifRef.current = chat.status;
+    if (!wasStreaming || chat.status !== "ready") return;
+    if (!document.hidden) return;
+
+    setNotifUnseenCount((n) => {
+      const next = n + 1;
+      document.title = `(${next}) ${originalTitleRef.current}`;
+      return next;
+    });
+
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      const lastAssistant = [...chat.messages].reverse().find((m) => m.role === "assistant");
+      const body = lastAssistant?.parts
+        ? lastAssistant.parts.filter((p) => p.type === "text").map((p) => ("text" in p ? p.text : "")).join("").slice(0, 60)
+        : "";
+      const modelLabel = MODELS.find((m) => m.id === modelRef.current)?.name ?? modelRef.current;
+      try {
+        new Notification(`Tag — ${modelLabel}`, {
+          body: body || "New reply",
+          icon: "/logos/tag-graffiti.png",
+        });
+      } catch {
+        // Notification API unavailable in this context — ignore
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chat.status]);
+
   // ── Sidebar / thread state — declared BEFORE any effect that references them ──
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     if (typeof window === "undefined") return true;
-    return window.innerWidth >= 1024; // lg: breakpoint
+    return window.innerWidth >= 768; // md: breakpoint — hidden by default on mobile
   });
   const [threads, setThreads] = useState<Thread[]>(() => loadThreads());
   const [activeThreadId, setActiveThreadId] = useState<string | null>(() => {
@@ -1873,6 +1970,8 @@ export default function Chat() {
         setThreadSearch("");
         setSlashOpen(false);
         setGlobalSearchOpen(false);
+        // Close mobile sidebar if open (only meaningful below md breakpoint)
+        if (window.innerWidth < 768) setSidebarOpen(false);
         return;
       }
 
@@ -2750,11 +2849,11 @@ export default function Chat() {
         <aside
           className={cn(
             "sidebar",
-            "flex flex-col relative bg-card border-r border-border transition-all duration-200 shrink-0 overflow-hidden",
+            "flex flex-col bg-card border-r border-border transition-all duration-200 shrink-0 overflow-hidden",
             sidebarOpen
-              ? "w-56 lg:w-64"
+              ? "w-56 md:w-64"
               : "w-0 overflow-hidden",
-            "fixed inset-y-0 left-0 z-40 lg:relative lg:z-auto"
+            "fixed inset-y-0 left-0 z-40 md:relative md:z-auto"
           )}
         >
           {/* ── Brick skin: tiled SVG wall behind sidebar content ── */}
@@ -3059,6 +3158,19 @@ export default function Chat() {
                 </button>
               )}
 
+              {/* Notification permission request — only shown when permission is "default" */}
+              {typeof Notification !== "undefined" && Notification.permission === "default" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    Notification.requestPermission().catch(() => {});
+                  }}
+                  className="w-full text-left text-[10px] text-muted-foreground/60 hover:text-primary transition-colors px-2 py-0.5"
+                >
+                  Enable notifications
+                </button>
+              )}
+
               {/* Integrations panel — per-user Composio OAuth connections */}
               <IntegrationsPanel jwt={jwt} />
 
@@ -3088,7 +3200,7 @@ export default function Chat() {
         {/* Mobile sidebar backdrop */}
         {sidebarOpen && (
           <div
-            className="fixed inset-0 z-30 bg-foreground/20 lg:hidden"
+            className="fixed inset-0 z-30 bg-foreground/20 md:hidden"
             onClick={() => setSidebarOpen(false)}
             aria-hidden
           />
@@ -3099,14 +3211,14 @@ export default function Chat() {
 
           {/* Top bar */}
           <header className="flex items-center gap-2 px-3 sm:px-4 py-2.5 border-b border-border bg-card shrink-0">
-            {/* Hamburger */}
+            {/* Hamburger — mobile only (<768px) */}
             <button
               type="button"
               onClick={() => setSidebarOpen((s) => !s)}
               aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-              className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              className="md:hidden rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
             >
-              {sidebarOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+              <Menu className="h-4 w-4" />
             </button>
 
             {/* View toggle pills */}
@@ -3620,7 +3732,14 @@ export default function Chat() {
                   <div className="relative z-10">
                     <div className="mx-auto w-full max-w-2xl px-4 py-6">
                       {isEmpty ? (
-                        <EmptyState onPickPrompt={handlePickPrompt} />
+                        <EmptyState
+                          onPickPrompt={handlePickPrompt}
+                          templates={templates}
+                          model={model}
+                          temperature={temperature}
+                          jwt={jwt}
+                          onOpenTemp={() => setTempSliderOpen((o) => !o)}
+                        />
                       ) : (
                         <div className="flex flex-col gap-6">
                           {/* ── Summarize earlier / undo banner ── */}

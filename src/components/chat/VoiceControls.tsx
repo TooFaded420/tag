@@ -1,6 +1,41 @@
 import { useEffect, useRef, useState } from "react";
-import { Mic, Square, Volume2 } from "lucide-react";
+import { Mic, Square, Volume2, Globe, Hand } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { MicMeter } from "./MicMeter";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const LANG_KEY = "tag_voice_lang";
+const HOLD_KEY = "tag_voice_hold_mode";
+
+const LANGUAGES: { value: string; label: string }[] = [
+  { value: "auto", label: "Auto-detect" },
+  { value: "en", label: "English" },
+  { value: "es", label: "Spanish" },
+  { value: "fr", label: "French" },
+  { value: "de", label: "German" },
+  { value: "ja", label: "Japanese" },
+  { value: "zh", label: "Chinese" },
+];
+
+function readLang(): string {
+  return localStorage.getItem(LANG_KEY) ?? "auto";
+}
+function saveLang(v: string) {
+  localStorage.setItem(LANG_KEY, v);
+}
+function readHold(): boolean {
+  return localStorage.getItem(HOLD_KEY) === "true";
+}
+function saveHold(v: boolean) {
+  localStorage.setItem(HOLD_KEY, String(v));
+}
+
+// ---------------------------------------------------------------------------
+// MicButton
+// ---------------------------------------------------------------------------
 
 interface MicButtonProps {
   onTranscript: (text: string) => void;
@@ -10,12 +45,19 @@ interface MicButtonProps {
 export function MicButton({ onTranscript, byokKey }: MicButtonProps) {
   const [isRecording, setIsRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lang, setLang] = useState<string>(readLang);
+  const [holdMode, setHoldMode] = useState<boolean>(readHold);
+  const [showLangMenu, setShowLangMenu] = useState(false);
+  // Expose live stream to MicMeter
+  const [liveStream, setLiveStream] = useState<MediaStream | null>(null);
+
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // P1b: guard against overlapping start() calls (double-click / slow permission prompt)
   const startingRef = useRef(false);
+  const langMenuRef = useRef<HTMLDivElement | null>(null);
 
   // Hide if MediaRecorder unsupported (older Safari, locked iOS)
   if (typeof MediaRecorder === "undefined") return null;
@@ -31,6 +73,19 @@ export function MicButton({ onTranscript, byokKey }: MicButtonProps) {
     };
   }, []);
 
+  // Close lang menu on outside click
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  useEffect(() => {
+    if (!showLangMenu) return;
+    function handle(e: MouseEvent) {
+      if (langMenuRef.current && !langMenuRef.current.contains(e.target as Node)) {
+        setShowLangMenu(false);
+      }
+    }
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [showLangMenu]);
+
   async function start() {
     if (!byokKey) return;
     // P1b: prevent overlapping recorder starts
@@ -41,19 +96,19 @@ export function MicButton({ onTranscript, byokKey }: MicButtonProps) {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       // MEDIUM: keep stream ref so unmount cleanup can stop it
       streamRef.current = stream;
+      setLiveStream(stream);
 
       // P1a: MediaRecorder constructor may throw on unsupported mimeType (e.g. Safari/iOS).
-      // On throw, stop the live stream immediately so the mic indicator goes dark.
       let recorder: MediaRecorder;
       try {
         recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
       } catch {
-        // Fallback: try audio/mp4, then let the browser pick
         try {
           recorder = new MediaRecorder(stream, { mimeType: "audio/mp4" });
         } catch {
           stream.getTracks().forEach((t) => t.stop());
           streamRef.current = null;
+          setLiveStream(null);
           setError("Recording not supported in this browser");
           return;
         }
@@ -67,12 +122,15 @@ export function MicButton({ onTranscript, byokKey }: MicButtonProps) {
       recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
         streamRef.current = null;
+        setLiveStream(null);
         const blob = new Blob(chunksRef.current, { type: mimeType });
         const ext = mimeType.includes("mp4") ? "audio.mp4" : "audio.webm";
         try {
           const form = new FormData();
           form.append("file", blob, ext);
           form.append("model", "whisper-1");
+          const currentLang = localStorage.getItem(LANG_KEY) ?? "auto";
+          if (currentLang !== "auto") form.append("language", currentLang);
           const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
             method: "POST",
             headers: { Authorization: `Bearer ${byokKey}` },
@@ -98,6 +156,7 @@ export function MicButton({ onTranscript, byokKey }: MicButtonProps) {
     } catch {
       setError("Microphone permission denied");
       setIsRecording(false);
+      setLiveStream(null);
     } finally {
       // P1b: always release the guard so a subsequent attempt is allowed
       startingRef.current = false;
@@ -113,6 +172,26 @@ export function MicButton({ onTranscript, byokKey }: MicButtonProps) {
     setIsRecording(false);
   }
 
+  // ---- hold mode pointer handlers ----
+  function handlePointerDown(e: React.PointerEvent<HTMLButtonElement>) {
+    if (!holdMode) return;
+    // Capture pointer so pointerup fires even if cursor leaves button
+    (e.currentTarget as HTMLButtonElement).setPointerCapture(e.pointerId);
+    start();
+  }
+  function handlePointerUp() {
+    if (!holdMode) return;
+    stop();
+  }
+  function handlePointerLeave() {
+    if (!holdMode) return;
+    if (isRecording) stop();
+  }
+  function handleClick() {
+    if (holdMode) return; // handled by pointer events
+    isRecording ? stop() : start();
+  }
+
   const disabled = !byokKey;
   const title = disabled
     ? "Add an OpenAI key in BYOK settings to use voice"
@@ -120,28 +199,106 @@ export function MicButton({ onTranscript, byokKey }: MicButtonProps) {
     ? error
     : isRecording
     ? "Stop recording"
+    : holdMode
+    ? "Hold to record"
     : "Start recording";
 
+  const selectedLangLabel = LANGUAGES.find((l) => l.value === lang)?.label ?? "Auto-detect";
+
   return (
-    <button
-      type="button"
-      onClick={isRecording ? stop : start}
-      disabled={disabled}
-      title={title}
-      className={cn(
-        "inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors",
-        disabled
-          ? "text-muted-foreground/40 cursor-not-allowed"
-          : isRecording
-          ? "bg-destructive/10 text-destructive ring-2 ring-destructive/40 animate-pulse"
-          : "text-muted-foreground hover:text-foreground hover:bg-muted"
-      )}
-      aria-label={isRecording ? "Stop recording" : "Start voice input"}
-    >
-      {isRecording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-    </button>
+    <span className="inline-flex items-center gap-1">
+      {/* Language selector */}
+      <span className="relative" ref={langMenuRef}>
+        <button
+          type="button"
+          onClick={() => setShowLangMenu((v) => !v)}
+          title={`Transcription language: ${selectedLangLabel}`}
+          className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground/60 hover:text-foreground hover:bg-muted transition-colors"
+          aria-label="Select transcription language"
+        >
+          <Globe className="h-3.5 w-3.5" />
+        </button>
+        {showLangMenu && (
+          <div className="absolute bottom-full left-0 mb-1 z-50 min-w-[140px] rounded-md border border-border bg-background shadow-md py-1">
+            {LANGUAGES.map((l) => (
+              <button
+                key={l.value}
+                type="button"
+                onClick={() => {
+                  setLang(l.value);
+                  saveLang(l.value);
+                  setShowLangMenu(false);
+                }}
+                className={cn(
+                  "w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors",
+                  lang === l.value && "text-foreground font-medium",
+                  lang !== l.value && "text-muted-foreground"
+                )}
+              >
+                {l.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </span>
+
+      {/* Hold mode toggle */}
+      <button
+        type="button"
+        onClick={() => {
+          const next = !holdMode;
+          setHoldMode(next);
+          saveHold(next);
+          if (isRecording) stop();
+        }}
+        title={holdMode ? "Push-to-talk ON — click to switch to toggle mode" : "Click to enable push-to-talk hold mode"}
+        className={cn(
+          "inline-flex h-7 w-7 items-center justify-center rounded transition-colors",
+          holdMode
+            ? "text-primary bg-primary/10 hover:bg-primary/20"
+            : "text-muted-foreground/60 hover:text-foreground hover:bg-muted"
+        )}
+        aria-label={holdMode ? "Disable push-to-talk" : "Enable push-to-talk"}
+        aria-pressed={holdMode}
+      >
+        <Hand className="h-3.5 w-3.5" />
+      </button>
+
+      {/* VU meter */}
+      <MicMeter stream={liveStream} active={isRecording} />
+
+      {/* Mic button */}
+      <button
+        type="button"
+        onClick={handleClick}
+        onPointerDown={holdMode ? handlePointerDown : undefined}
+        onPointerUp={holdMode ? handlePointerUp : undefined}
+        onPointerLeave={holdMode ? handlePointerLeave : undefined}
+        disabled={disabled}
+        title={title}
+        className={cn(
+          "inline-flex h-9 items-center justify-center rounded-full transition-colors select-none",
+          holdMode ? "px-3 gap-1.5" : "w-9",
+          disabled
+            ? "text-muted-foreground/40 cursor-not-allowed"
+            : isRecording
+            ? "bg-destructive/10 text-destructive ring-2 ring-destructive/40 animate-pulse"
+            : "text-muted-foreground hover:text-foreground hover:bg-muted"
+        )}
+        aria-label={isRecording ? "Stop recording" : "Start voice input"}
+      >
+        {isRecording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+        {holdMode && (
+          <span className="text-[10px] leading-none font-medium">(hold)</span>
+        )}
+      </button>
+    </span>
   );
 }
+
+// ---------------------------------------------------------------------------
+// TTSButton — unchanged from codex-fixed version
+// ---------------------------------------------------------------------------
 
 interface TTSButtonProps {
   text: string;
