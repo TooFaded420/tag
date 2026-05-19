@@ -160,6 +160,7 @@ const TEMPERATURE_KEY = "tag_temperature_v1";
 const MODEL_PRESETS_KEY = "tag_model_presets_v1";
 
 // Cost tracking: input $/1M tokens, output $/1M tokens (0 = free/synthetic)
+// output-only estimate; input tokens not tracked
 const MODEL_COSTS: Record<string, { in: number; out: number }> = {
   "claude-sonnet-4":           { in: 3,    out: 15  },
   "claude-sonnet-4-5":         { in: 3,    out: 15  },
@@ -174,8 +175,8 @@ const MODEL_COSTS: Record<string, { in: number; out: number }> = {
 function estimateCost(content: string, modelId: string): number {
   const rates = MODEL_COSTS[modelId];
   if (!rates || (rates.in === 0 && rates.out === 0)) return 0;
-  // Rough token estimate: chars / 4. Treat whole response as output tokens.
-  const tokens = content.length / 4;
+  // Rough token estimate: chars / 3.3. Treat whole response as output tokens.
+  const tokens = content.length / 3.3;
   return (tokens / 1_000_000) * rates.out;
 }
 
@@ -503,11 +504,13 @@ interface ThreadRowProps {
   draggable?: boolean;
   onDragStart?: (e: React.DragEvent) => void;
   onDragOver?: (e: React.DragEvent) => void;
+  onDragLeave?: (e: React.DragEvent) => void;
+  onDragEnd?: (e: React.DragEvent) => void;
   onDrop?: (e: React.DragEvent) => void;
   isDragOver?: boolean;
 }
 
-function ThreadRow({ thread, active, onSelect, onDelete, onTogglePin, draggable: isDraggable, onDragStart, onDragOver, onDrop, isDragOver }: ThreadRowProps) {
+function ThreadRow({ thread, active, onSelect, onDelete, onTogglePin, draggable: isDraggable, onDragStart, onDragOver, onDragLeave, onDragEnd, onDrop, isDragOver }: ThreadRowProps) {
   const firstMsg = thread.messages.find((m) => m.role === "user");
   const firstMsgText = firstMsg
     ? (firstMsg.parts?.find((p) => p.type === "text") as { type: "text"; text: string } | undefined)?.text
@@ -526,6 +529,8 @@ function ThreadRow({ thread, active, onSelect, onDelete, onTogglePin, draggable:
       draggable={isDraggable}
       onDragStart={onDragStart}
       onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDragEnd={onDragEnd}
       onDrop={onDrop}
     >
       <button
@@ -709,20 +714,7 @@ export default function Chat() {
     else { setGlobalSearchQuery(""); setGlobalSearchDebounced(""); }
   }, [globalSearchOpen]);
 
-  // ── Message cost tracking — keyed by message id ──────────────────────────
-  const [messageCosts, setMessageCosts] = useState<Record<string, number>>(() => {
-    // Rehydrate persisted costs from active thread on mount
-    try {
-      const raw = localStorage.getItem(THREAD_STORAGE_KEY);
-      if (!raw) return {};
-      const threads = JSON.parse(raw) as Thread[];
-      const map: Record<string, number> = {};
-      for (const t of threads) {
-        if (t.messageCosts) Object.assign(map, t.messageCosts);
-      }
-      return map;
-    } catch { return {}; }
-  });
+  // ── Message cost tracking — costs live in Thread.messageCosts, not separate state ──
 
   // ── Drag-to-reorder pinned threads ───────────────────────────────────────
   const dragThreadIdRef = useRef<string | null>(null);
@@ -1472,12 +1464,12 @@ export default function Chat() {
     setThreads((prev) => {
       if (!activeThreadId) return prev;
       const updated = prev.map((t) =>
-        t.id === activeThreadId ? { ...t, messages: chat.messages, updatedAt: Date.now(), messageCosts: messageCosts } : t
+        t.id === activeThreadId ? { ...t, messages: chat.messages, updatedAt: Date.now() } : t
       );
       saveThreads(updated);
       return updated;
     });
-  }, [chat.messages, activeThreadId, messageCosts]);
+  }, [chat.messages, activeThreadId]);
 
   // ── Compute cost when streaming finishes ─────────────────────────────────
   const prevStatusRef = useRef(chat.status);
@@ -1488,14 +1480,25 @@ export default function Chat() {
     // Find the last assistant message and compute its cost
     const lastAssistant = [...chat.messages].reverse().find((m) => m.role === "assistant");
     if (!lastAssistant) return;
-    if (messageCosts[lastAssistant.id] !== undefined) return; // already computed
     const content = lastAssistant.parts
       ? lastAssistant.parts.filter((p) => p.type === "text").map((p) => ("text" in p ? p.text : "")).join("")
       : (lastAssistant as unknown as { content?: string }).content ?? "";
     const cost = estimateCost(content, modelRef.current);
-    if (cost > 0) {
-      setMessageCosts((prev) => ({ ...prev, [lastAssistant.id]: cost }));
-    }
+    if (cost <= 0) return;
+    // Write cost directly into the active thread — no stale closure, short-circuit if already set
+    setThreads((prev) => {
+      if (!activeThreadId) return prev;
+      const thread = prev.find((t) => t.id === activeThreadId);
+      if (!thread) return prev;
+      if (thread.messageCosts?.[lastAssistant.id] !== undefined) return prev; // already computed
+      const updated = prev.map((t) =>
+        t.id === activeThreadId
+          ? { ...t, messageCosts: { ...(t.messageCosts ?? {}), [lastAssistant.id]: cost } }
+          : t
+      );
+      saveThreads(updated);
+      return updated;
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat.status]);
 
@@ -1924,6 +1927,33 @@ export default function Chat() {
   }, [presetsOpen]);
 
   const isEmpty = chat.messages.length === 0;
+  // Derived active thread for cost lookup and other render-time reads
+  const activeThread = threads.find((t) => t.id === activeThreadId) ?? null;
+
+  // ── Memoized cross-thread search results ─────────────────────────────────
+  type SearchResult = { threadId: string; threadTitle: string; messageId: string; snippet: string; matchStart: number };
+  const globalSearchResults = useMemo<SearchResult[]>(() => {
+    const q = globalSearchDebounced.trim().toLowerCase();
+    if (q.length < 2) return [];
+    const results: SearchResult[] = [];
+    for (const thread of threads) {
+      for (const msg of thread.messages) {
+        if (msg.role === "system") continue;
+        const body = msg.parts
+          ? msg.parts.filter((p) => p.type === "text").map((p) => ("text" in p ? p.text : "")).join("")
+          : (msg as unknown as { content?: string }).content ?? "";
+        const idx = body.toLowerCase().indexOf(q);
+        if (idx < 0) continue;
+        const start = Math.max(0, idx - 30);
+        const end = Math.min(body.length, idx + q.length + 30);
+        const snippet = (start > 0 ? "…" : "") + body.slice(start, end) + (end < body.length ? "…" : "");
+        results.push({ threadId: thread.id, threadTitle: thread.title || "Untitled", messageId: msg.id, snippet, matchStart: idx - start + (start > 0 ? 1 : 0) });
+        if (results.length >= 40) break;
+      }
+      if (results.length >= 40) break;
+    }
+    return results;
+  }, [globalSearchDebounced, threads]);
 
   // ── Starter prompt pick — sets input and focuses textarea; does not send ──
   function handlePickPrompt(prompt: string) {
@@ -2145,6 +2175,16 @@ export default function Chat() {
                           onDragOver={bucket === "Pinned" ? (e) => {
                             e.preventDefault();
                             setDragOverThreadId(thread.id);
+                          } : undefined}
+                          onDragLeave={bucket === "Pinned" ? (e) => {
+                            // Only clear if leaving the li itself, not a child element
+                            if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                              setDragOverThreadId(null);
+                            }
+                          } : undefined}
+                          onDragEnd={bucket === "Pinned" ? () => {
+                            dragThreadIdRef.current = null;
+                            setDragOverThreadId(null);
                           } : undefined}
                           onDrop={bucket === "Pinned" ? (e) => {
                             e.preventDefault();
@@ -2657,7 +2697,7 @@ export default function Chat() {
                             }
 
                             return (
-                              <div key={msg.id} data-message-id={msg.id} className="flex items-start gap-2.5">
+                              <div key={msg.id} id={`msg-${msg.id}`} className="flex items-start gap-2.5">
                                 <div className="h-7 w-7 shrink-0 rounded-full bg-muted border border-border/60 flex items-center justify-center overflow-hidden mt-0.5">
                                   <picture>
                                     <source srcSet="/logos/tag-graffiti.webp" type="image/webp" />
@@ -2696,9 +2736,9 @@ export default function Chat() {
                                       >
                                         <GitFork className="h-3 w-3" />
                                       </button>
-                                      {messageCosts[msg.id] != null && messageCosts[msg.id] > 0 && (
-                                        <span className="font-mono text-[10px] text-muted-foreground/40 ml-1" title="Estimated cost (output tokens)">
-                                          {formatCost(messageCosts[msg.id])}
+                                      {activeThread?.messageCosts?.[msg.id] != null && activeThread.messageCosts[msg.id] > 0 && (
+                                        <span className="font-mono text-[10px] text-muted-foreground/40 ml-1" title="est. output cost only">
+                                          {formatCost(activeThread.messageCosts[msg.id])}
                                         </span>
                                       )}
                                     </div>
@@ -3120,26 +3160,7 @@ export default function Chat() {
       {/* Global cross-thread search modal */}
       {globalSearchOpen && (() => {
         const q = globalSearchDebounced.trim().toLowerCase();
-        type SearchResult = { threadId: string; threadTitle: string; messageId: string; snippet: string; matchStart: number };
-        const results: SearchResult[] = [];
-        if (q.length >= 2) {
-          for (const thread of threads) {
-            for (const msg of thread.messages) {
-              if (msg.role === "system") continue;
-              const body = msg.parts
-                ? msg.parts.filter((p) => p.type === "text").map((p) => ("text" in p ? p.text : "")).join("")
-                : (msg as unknown as { content?: string }).content ?? "";
-              const idx = body.toLowerCase().indexOf(q);
-              if (idx < 0) continue;
-              const start = Math.max(0, idx - 30);
-              const end = Math.min(body.length, idx + q.length + 30);
-              const snippet = (start > 0 ? "…" : "") + body.slice(start, end) + (end < body.length ? "…" : "");
-              results.push({ threadId: thread.id, threadTitle: thread.title || "Untitled", messageId: msg.id, snippet, matchStart: idx - start + (start > 0 ? 1 : 0) });
-              if (results.length >= 40) break;
-            }
-            if (results.length >= 40) break;
-          }
-        }
+        const results = globalSearchResults;
         return (
           <>
             <div className="fixed inset-0 z-50 bg-foreground/30 backdrop-blur-[2px]" onClick={() => setGlobalSearchOpen(false)} aria-hidden />
@@ -3183,7 +3204,7 @@ export default function Chat() {
                                   setGlobalSearchOpen(false);
                                   // scroll to message after brief delay for render
                                   setTimeout(() => {
-                                    const el = document.querySelector(`[data-message-id="${r.messageId}"]`);
+                                    const el = document.getElementById(`msg-${r.messageId}`);
                                     el?.scrollIntoView({ behavior: "smooth", block: "center" });
                                   }, 150);
                                 }
