@@ -1028,40 +1028,6 @@ export default function Chat() {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
-  // Fire notification when streaming finishes while tab is hidden
-  const prevStatusForNotifRef = useRef(chat.status ?? "ready");
-  useEffect(() => {
-    const wasStreaming =
-      prevStatusForNotifRef.current === "streaming" ||
-      prevStatusForNotifRef.current === "submitted";
-    prevStatusForNotifRef.current = chat.status;
-    if (!wasStreaming || chat.status !== "ready") return;
-    if (!document.hidden) return;
-
-    setNotifUnseenCount((n) => {
-      const next = n + 1;
-      document.title = `(${next}) ${originalTitleRef.current}`;
-      return next;
-    });
-
-    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-      const lastAssistant = [...chat.messages].reverse().find((m) => m.role === "assistant");
-      const body = lastAssistant?.parts
-        ? lastAssistant.parts.filter((p) => p.type === "text").map((p) => ("text" in p ? p.text : "")).join("").slice(0, 60)
-        : "";
-      const modelLabel = MODELS.find((m) => m.id === modelRef.current)?.name ?? modelRef.current;
-      try {
-        new Notification(`Tag — ${modelLabel}`, {
-          body: body || "New reply",
-          icon: "/logos/tag-graffiti.png",
-        });
-      } catch {
-        // Notification API unavailable in this context — ignore
-      }
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chat.status]);
-
   // ── Sidebar / thread state — declared BEFORE any effect that references them ──
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     if (typeof window === "undefined") return true;
@@ -1857,6 +1823,40 @@ export default function Chat() {
       },
     }),
   });
+
+  // Fire notification when streaming finishes while tab is hidden
+  const prevStatusForNotifRef = useRef(chat.status ?? "ready");
+  useEffect(() => {
+    const wasStreaming =
+      prevStatusForNotifRef.current === "streaming" ||
+      prevStatusForNotifRef.current === "submitted";
+    prevStatusForNotifRef.current = chat.status;
+    if (!wasStreaming || chat.status !== "ready") return;
+    if (!document.hidden) return;
+
+    setNotifUnseenCount((n) => {
+      const next = n + 1;
+      document.title = `(${next}) ${originalTitleRef.current}`;
+      return next;
+    });
+
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      const lastAssistant = [...chat.messages].reverse().find((m) => m.role === "assistant");
+      const body = lastAssistant?.parts
+        ? lastAssistant.parts.filter((p) => p.type === "text").map((p) => ("text" in p ? p.text : "")).join("").slice(0, 60)
+        : "";
+      const modelLabel = MODELS.find((m) => m.id === modelRef.current)?.name ?? modelRef.current;
+      try {
+        new Notification(`Tag — ${modelLabel}`, {
+          body: body || "New reply",
+          icon: "/logos/tag-graffiti.png",
+        });
+      } catch {
+        // Notification API unavailable in this context — ignore
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chat.status]);
 
   // Auto-resend a previously failed anon message once a fresh Turnstile token
   // (or anon session) arrives. Without this, every gate prompt eats the
