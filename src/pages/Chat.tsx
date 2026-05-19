@@ -44,6 +44,7 @@ import { WorkspaceSwitcher } from "@/components/chat/WorkspaceSwitcher";
 import { InviteDialog } from "@/components/chat/InviteDialog";
 import { TurnstileGate } from "@/components/chat/TurnstileGate";
 import { MemoryPanel } from "@/components/chat/MemoryPanel";
+import { IntegrationsPanel, readComposioKey } from "@/components/chat/IntegrationsPanel";
 import { CompareView } from "@/components/chat/CompareView";
 import { AgentView } from "@/components/chat/AgentView";
 import { FileDropzone } from "@/components/chat/FileDropzone";
@@ -1148,6 +1149,9 @@ export default function Chat() {
         activeBYOKKey = liveByokKeys["synthetic"];
       }
 
+      // Read Composio BYOK key at request time (same pattern as other live refs)
+      const liveComposioKey = readComposioKey() || undefined;
+
       let response: Response;
 
       if (activeBYOKProvider && activeBYOKKey && DIRECT_BYOK_PROVIDERS[activeBYOKProvider]) {
@@ -1176,12 +1180,19 @@ export default function Chat() {
             model: liveModel,
             temperature: liveTemperature,
             byok_provider: activeBYOKProvider,
+            ...(liveComposioKey ? { byok_composio_key: liveComposioKey } : {}),
           }),
         });
       } else {
         response = await fetch(input as RequestInfo, {
           ...init,
-          body: JSON.stringify({ ...reqBody, messages: finalMessages, model: liveModel, temperature: liveTemperature }),
+          body: JSON.stringify({
+            ...reqBody,
+            messages: finalMessages,
+            model: liveModel,
+            temperature: liveTemperature,
+            ...(liveComposioKey ? { byok_composio_key: liveComposioKey } : {}),
+          }),
         });
       }
 
@@ -2594,6 +2605,9 @@ export default function Chat() {
                   Login
                 </button>
               )}
+
+              {/* Integrations panel — per-user Composio OAuth connections */}
+              <IntegrationsPanel jwt={jwt} />
 
               {/* hecz.dev mini-nav — small, unobtrusive, cross-surface links */}
               <div className="flex items-center gap-3 px-2 pt-1 text-[10px] text-muted-foreground/60">

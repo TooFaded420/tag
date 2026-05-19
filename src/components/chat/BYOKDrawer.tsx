@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { Key, X, Eye, EyeOff, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { readComposioKey } from "@/components/chat/IntegrationsPanel";
+
+const COMPOSIO_KEY_STORAGE = "tag_composio_key";
 
 export type Provider = "openrouter" | "anthropic" | "openai" | "google" | "synthetic" | "ollama";
 
@@ -85,13 +88,35 @@ export function BYOKDrawer({ open, onClose, onKeysChange }: Props) {
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
 
+  // Composio BYOK — separate localStorage key ("tag_composio_key")
+  const [composioDraft, setComposioDraft] = useState("");
+  const [composioRevealed, setComposioRevealed] = useState(false);
+
   useEffect(() => {
     if (open) {
       const k = readKeys();
       setKeys(k);
       setDrafts(k);
+      setComposioDraft(readComposioKey());
     }
   }, [open]);
+
+  const saveComposio = (value: string) => {
+    const trimmed = value.trim();
+    try {
+      if (trimmed) {
+        localStorage.setItem(COMPOSIO_KEY_STORAGE, trimmed);
+      } else {
+        localStorage.removeItem(COMPOSIO_KEY_STORAGE);
+      }
+    } catch { /* ignore */ }
+    setComposioDraft(trimmed);
+  };
+
+  const removeComposio = () => {
+    try { localStorage.removeItem(COMPOSIO_KEY_STORAGE); } catch { /* ignore */ }
+    setComposioDraft("");
+  };
 
   const save = (provider: Provider, value: string) => {
     const next = { ...keys };
@@ -210,14 +235,70 @@ export function BYOKDrawer({ open, onClose, onKeysChange }: Props) {
               </div>
             );
           })}
+          {/* ── Composio BYOK ─────────────────────────────────────────── */}
+          <div className="pt-2 border-t border-border space-y-1.5">
+            <div className="flex items-baseline justify-between">
+              <label className="font-medium text-sm">Composio API Key</label>
+              <a
+                href="https://composio.dev"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-primary hover:underline"
+              >
+                Sign up at composio.dev →
+              </a>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Agent integrations (Gmail, Slack, GitHub, Linear, Notion, Calendar).
+              Your key stays in your browser — Hecz never stores it server-side, only forwards it as a pass-through.
+            </p>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <input
+                  type={composioRevealed ? "text" : "password"}
+                  value={composioDraft}
+                  onChange={(e) => setComposioDraft(e.target.value)}
+                  onBlur={() => saveComposio(composioDraft)}
+                  placeholder="comp_..."
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 pr-9 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+                <button
+                  type="button"
+                  onClick={() => setComposioRevealed((r) => !r)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-muted text-muted-foreground"
+                  aria-label={composioRevealed ? "Hide key" : "Show key"}
+                >
+                  {composioRevealed ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              {composioDraft && (
+                <button
+                  type="button"
+                  onClick={removeComposio}
+                  className="px-3 rounded-md border border-border hover:bg-destructive/10 hover:text-destructive hover:border-destructive/40 transition-colors"
+                  aria-label="Remove Composio key"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            {composioDraft && (
+              <p className="text-xs text-emerald-600 dark:text-emerald-400">
+                ✓ Key saved locally
+              </p>
+            )}
+          </div>
+
           <div className="pt-2 border-t border-border">
             <button
               type="button"
               onClick={() => {
                 localStorage.removeItem(STORAGE_KEY);
+                localStorage.removeItem(COMPOSIO_KEY_STORAGE);
                 const empty = {};
                 setKeys(empty);
                 setDrafts({});
+                setComposioDraft("");
                 onKeysChange?.(empty);
               }}
               className="w-full rounded-md border border-destructive/40 px-3 py-2 text-xs text-destructive hover:bg-destructive/10 transition-colors"
