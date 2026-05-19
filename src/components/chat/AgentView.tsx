@@ -249,6 +249,10 @@ async function callTool(
         args,
         timeout_s,
         request_id: crypto.randomUUID(),
+        // dry_run is always false in AgentView (no dry-run UI here).
+        // Server-side enforcement in tag-agent-tool will block side-effecting tools
+        // if dry_run=true were ever passed. Confirmation gate also applies server-side.
+        dry_run: false,
       }),
       signal: AbortSignal.timeout(80_000),
     });

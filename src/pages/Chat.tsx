@@ -807,8 +807,9 @@ export default function Chat() {
     try { localStorage.setItem(REQUIRE_CONFIRM_KEY, String(requireConfirm)); } catch {}
   }, [requireConfirm]);
 
-  // Pending action confirmation: set when the agent outputs [ACTION_PLAN:...]
-  const [pendingConfirm, setPendingConfirm] = useState<{ msgId: string; toolName: string; argsJson: string } | null>(null);
+  // Pending action confirmation: set when the server returns { status: "pending_approval" }
+  // from tag-agent-tool. Sourced from server response shape, NOT from parsing model output.
+  const [pendingConfirm, setPendingConfirm] = useState<{ pendingId: string; toolName: string; argsJson: string } | null>(null);
 
   // ── Feature: Prompt templates ──────────────────────────────────────────
   const [templates, setTemplates] = useState<PromptTemplate[]>(() => loadTemplates());
@@ -1659,27 +1660,21 @@ export default function Chat() {
     chatSetMessagesRef.current = chat.setMessages;
   });
 
-  // ── Detect [ACTION_PLAN:] sentinel in completed assistant messages ────────
-  // When streaming finishes and the last assistant message contains the
-  // confirmation sentinel, extract the plan and show the confirm modal.
-  useEffect(() => {
-    if (chat.status !== "ready") return;
-    if (!requireConfirmRef.current || dryRunRef.current) return;
-    if (pendingConfirm) return; // already showing modal
-    const lastAssistant = [...chat.messages].reverse().find((m) => m.role === "assistant");
-    if (!lastAssistant) return;
-    const content = lastAssistant.parts
-      ? lastAssistant.parts.filter((p) => p.type === "text").map((p) => ("text" in p ? p.text : "")).join("")
-      : (lastAssistant as unknown as { content?: string }).content ?? "";
-    const match = content.match(/\[ACTION_PLAN:\s*([^\]]+)\]\s*(\{[\s\S]*?\})?/);
-    if (!match) return;
-    const toolName = match[1].trim();
-    const argsJson = match[2]?.trim() ?? "{}";
-    if (ACTIONS_REQUIRING_CONFIRM.has(toolName)) {
-      setPendingConfirm({ msgId: lastAssistant.id, toolName, argsJson });
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chat.status, chat.messages]);
+  // ── Server-shape confirmation detection ──────────────────────────────────
+  // The [ACTION_PLAN:] regex sentinel has been REMOVED (codex P0 — prompt-injection
+  // vector). The confirmation modal is now triggered ONLY by the server returning
+  // { status: "pending_approval", pending_id, tool, args } from tag-agent-tool.
+  //
+  // In the Chat.tsx path (useChat → synthetic-public-proxy → AI SDK), tool calls
+  // are executed server-side by the AI SDK. To intercept them, the proxy would need
+  // to surface tool results back to the client. That plumbing does not exist yet.
+  // TODO: When synthetic-public-proxy exposes tool call results in the stream, detect
+  // { status: "pending_approval" } there and call setPendingConfirm accordingly.
+  //
+  // For the AgentView path, tag-agent-tool directly returns pending_approval and
+  // AgentView surfaces it to the user (see AgentView.tsx callTool handling).
+  // The pendingConfirm state below is wired to the modal and the approve/dismiss
+  // handlers that call tag-integrations action=approve/dismiss.
 
   // ── Compute cost when streaming finishes ─────────────────────────────────
   const prevStatusRef = useRef(chat.status);
@@ -4008,7 +4003,7 @@ export default function Chat() {
                                       if (templateDraft.id) {
                                         setTemplates((ts) => ts.map((t) => t.id === templateDraft.id ? templateDraft : t));
                                       } else {
-                                        setTemplates((ts) => [...ts, { ...templateDraft, id: `t${Date.now()}` }]);
+                                        setTemplates((ts) => [...ts, { ...templateDraft, id: crypto.randomUUID() }]);
                                       }
                                       setTemplateEditOpen(false);
                                     }}
@@ -4200,9 +4195,15 @@ export default function Chat() {
             className="fixed inset-0 z-50 bg-foreground/30 backdrop-blur-[2px]"
             aria-hidden
             onClick={() => {
+              const snapshot = pendingConfirm;
               setPendingConfirm(null);
-              hasSentThisSessionRef.current = true;
-              chat.sendMessage({ text: "[CANCEL]" });
+              if (jwt && snapshot) {
+                fetch(`${SUPABASE_URL}/functions/v1/tag-integrations`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+                  body: JSON.stringify({ action: "dismiss", pending_id: snapshot.pendingId }),
+                }).catch(() => {/* best-effort */});
+              }
             }}
           />
           <div
@@ -4236,7 +4237,7 @@ export default function Chat() {
                   <p className="text-[11px] text-muted-foreground">Agent wants to take this action on your behalf</p>
                 </div>
               </div>
-              {/* Args preview */}
+              {/* Args preview — sourced from server-issued pending_id, not model output */}
               <div className="px-5 py-3">
                 <pre className="rounded-lg bg-muted/60 border border-border/40 px-3 py-2 text-[11px] font-mono text-foreground/80 overflow-x-auto whitespace-pre-wrap break-all max-h-40">
                   {(() => {
@@ -4245,14 +4246,21 @@ export default function Chat() {
                   })()}
                 </pre>
               </div>
-              {/* Footer */}
+              {/* Footer — approve/dismiss via server (tag-integrations), not [PROCEED]/[CANCEL] messages */}
               <div className="flex gap-2 px-5 pb-5">
                 <button
                   type="button"
                   onClick={() => {
+                    const snapshot = pendingConfirm;
                     setPendingConfirm(null);
-                    hasSentThisSessionRef.current = true;
-                    chat.sendMessage({ text: "[CANCEL]" });
+                    // Dismiss: delete the pending_tool_approvals row server-side
+                    if (jwt && snapshot) {
+                      fetch(`${SUPABASE_URL}/functions/v1/tag-integrations`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+                        body: JSON.stringify({ action: "dismiss", pending_id: snapshot.pendingId }),
+                      }).catch(() => {/* best-effort */});
+                    }
                   }}
                   className="flex-1 rounded-full border border-border bg-background px-4 py-2 text-sm text-foreground hover:bg-muted transition-colors"
                 >
@@ -4261,13 +4269,21 @@ export default function Chat() {
                 <button
                   type="button"
                   onClick={() => {
+                    const snapshot = pendingConfirm;
                     setPendingConfirm(null);
-                    hasSentThisSessionRef.current = true;
-                    chat.sendMessage({ text: "[PROCEED]" });
+                    // Approve: call tag-integrations action=approve, which re-invokes
+                    // tag-agent-tool with confirmed=true + pending_id (server validates).
+                    if (jwt && snapshot) {
+                      fetch(`${SUPABASE_URL}/functions/v1/tag-integrations`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+                        body: JSON.stringify({ action: "approve", pending_id: snapshot.pendingId }),
+                      }).catch(() => {/* best-effort */});
+                    }
                   }}
                   className="flex-1 rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 transition-opacity"
                 >
-                  Approve &amp; send
+                  Approve &amp; execute
                 </button>
               </div>
             </div>
