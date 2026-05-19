@@ -28,6 +28,7 @@ import {
   Send,
   Settings2,
   Share2,
+  Square,
   Terminal,
   Thermometer,
   Trash2,
@@ -1682,12 +1683,28 @@ export default function Chat() {
         setByokOpen(true);
         return;
       }
+      // Cmd/Ctrl+Shift+L — clear current thread messages
+      if (e.key.toLowerCase() === "l" && e.shiftKey && !inTextInput) {
+        if (chat.status === "streaming" || chat.status === "submitted") return;
+        e.preventDefault();
+        if (!activeThreadId) return;
+        if (!window.confirm("Clear all messages in this thread?")) return;
+        chat.setMessages([]);
+        setThreads((prev) => {
+          const updated = prev.map((t) =>
+            t.id === activeThreadId ? { ...t, messages: [] } : t
+          );
+          saveThreads(updated);
+          return updated;
+        });
+        return;
+      }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [createNewThread]);
+  }, [createNewThread, chat, activeThreadId]);
 
   // On first load with no active thread, create one
   useEffect(() => {
@@ -3701,14 +3718,26 @@ export default function Chat() {
                         onTranscript={(text) => setInput((prev) => prev ? `${prev} ${text}` : text)}
                         byokKey={byokKeys?.["openai"]}
                       />
-                      <button
-                        type="submit"
-                        disabled={!canSend}
-                        className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-opacity disabled:opacity-30 hover:opacity-90"
-                        aria-label="Send message"
-                      >
-                        <Send className="h-4 w-4" />
-                      </button>
+                      {(chat.status === "streaming" || chat.status === "submitted") ? (
+                        <button
+                          type="button"
+                          onClick={() => chat.stop()}
+                          className="flex h-8 w-8 items-center justify-center rounded-lg bg-destructive text-destructive-foreground transition-opacity hover:opacity-90"
+                          aria-label="Stop generation"
+                          title="Stop generation"
+                        >
+                          <Square className="h-4 w-4" />
+                        </button>
+                      ) : (
+                        <button
+                          type="submit"
+                          disabled={!canSend}
+                          className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-opacity disabled:opacity-30 hover:opacity-90"
+                          aria-label="Send message"
+                        >
+                          <Send className="h-4 w-4" />
+                        </button>
+                      )}
                     </div>
                   </form>
                 </div>
