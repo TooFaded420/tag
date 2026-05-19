@@ -101,6 +101,13 @@ export function NotificationCenter({ jwt }: NotificationCenterProps) {
     }
   }, [open, jwt, listLoaded, fetchList]);
 
+  // Reset listLoaded when popover closes so next open fetches fresh data
+  useEffect(() => {
+    if (!open) {
+      setListLoaded(false);
+    }
+  }, [open]);
+
   // ── Outside-click closes popover ─────────────────────────────────────────────
   useEffect(() => {
     if (!open) return;
@@ -118,11 +125,25 @@ export function NotificationCenter({ jwt }: NotificationCenterProps) {
     return () => document.removeEventListener("mousedown", handleClick);
   }, [open]);
 
+  // ── Safe navigation (XSS: block non-http/https protocols) ───────────────────
+  function safeNavigate(url: string | null) {
+    if (!url) return;
+    try {
+      const u = new URL(url, window.location.origin);
+      if (u.protocol !== "https:" && u.protocol !== "http:") return;
+      window.location.href = u.toString();
+    } catch {
+      // invalid URL — silently ignore
+    }
+  }
+
   // ── Mark single notification read ───────────────────────────────────────────
   async function handleNotificationClick(n: Notification) {
     if (!jwt) return;
     if (!n.read_at) {
-      // optimistic update
+      const prevReadAt = n.read_at;
+      const prevUnread = unreadCount;
+      // optimistic apply
       setNotifications((prev) =>
         prev.map((x) =>
           x.id === n.id ? { ...x, read_at: new Date().toISOString() } : x,
@@ -132,11 +153,15 @@ export function NotificationCenter({ jwt }: NotificationCenterProps) {
       try {
         await callFn(jwt, { action: "mark_read", notification_id: n.id });
       } catch {
-        // revert on failure is acceptable — count will resync on next poll
+        // revert
+        setNotifications((prev) =>
+          prev.map((x) => (x.id === n.id ? { ...x, read_at: prevReadAt } : x)),
+        );
+        setUnreadCount(prevUnread);
       }
     }
     if (n.link) {
-      window.location.href = n.link;
+      safeNavigate(n.link);
     }
     if (!n.link) {
       setOpen(false);
