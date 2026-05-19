@@ -14,7 +14,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { useCallback, useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, Clock, Plus, Pencil, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Clock, Plus, Pencil, Trash2, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
@@ -34,6 +34,15 @@ interface ScheduledPrompt {
   next_run_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+interface PromptRun {
+  id: string;
+  prompt_id: string;
+  run_at: string;
+  response_text: string | null;
+  error: string | null;
+  duration_ms: number | null;
 }
 
 interface ScheduledPromptsPanelProps {
@@ -120,6 +129,15 @@ export function ScheduledPromptsPanel({ jwt }: ScheduledPromptsPanelProps) {
   // Per-row action states
   const [toggling, setToggling] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+
+  // Runs state: expanded prompt id → runs array | "loading" | "error"
+  const [runsExpanded, setRunsExpanded] = useState<string | null>(null);
+  const [runsMap, setRunsMap] = useState<Record<string, PromptRun[] | "loading" | "error">>({});
+  // Expanded run response preview
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  // All-runs panel
+  const [allRunsOpen, setAllRunsOpen] = useState(false);
+  const [allRuns, setAllRuns] = useState<PromptRun[] | "loading" | "error" | null>(null);
 
   // ── Load ───────────────────────────────────────────────────────────────────
 
@@ -235,6 +253,56 @@ export function ScheduledPromptsPanel({ jwt }: ScheduledPromptsPanelProps) {
     [jwt, formMode],
   );
 
+  // ── Fetch runs for a prompt ────────────────────────────────────────────────
+
+  const fetchRuns = useCallback(
+    async (promptId: string) => {
+      if (!jwt) return;
+      setRunsMap((prev) => ({ ...prev, [promptId]: "loading" }));
+      try {
+        const data = (await apiCall(jwt, { action: "runs", prompt_id: promptId, limit: 20 })) as {
+          runs: PromptRun[];
+        };
+        setRunsMap((prev) => ({ ...prev, [promptId]: data.runs ?? [] }));
+      } catch {
+        setRunsMap((prev) => ({ ...prev, [promptId]: "error" }));
+      }
+    },
+    [jwt],
+  );
+
+  const toggleRuns = useCallback(
+    (promptId: string) => {
+      if (runsExpanded === promptId) {
+        setRunsExpanded(null);
+      } else {
+        setRunsExpanded(promptId);
+        if (!runsMap[promptId] || runsMap[promptId] === "error") {
+          void fetchRuns(promptId);
+        }
+      }
+    },
+    [runsExpanded, runsMap, fetchRuns],
+  );
+
+  const fetchAllRuns = useCallback(async () => {
+    if (!jwt) return;
+    setAllRuns("loading");
+    try {
+      const data = (await apiCall(jwt, { action: "runs", limit: 50 })) as {
+        runs: PromptRun[];
+      };
+      setAllRuns(data.runs ?? []);
+    } catch {
+      setAllRuns("error");
+    }
+  }, [jwt]);
+
+  const openAllRuns = () => {
+    setAllRunsOpen(true);
+    void fetchAllRuns();
+  };
+
   // ── Guard ──────────────────────────────────────────────────────────────────
 
   if (!jwt) return null;
@@ -279,74 +347,157 @@ export function ScheduledPromptsPanel({ jwt }: ScheduledPromptsPanelProps) {
           {/* Prompt list */}
           {!loading && prompts.length > 0 && (
             <ul className="space-y-0.5">
-              {prompts.map((p) => (
-                <li
-                  key={p.id}
-                  className="group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted transition-colors"
-                >
-                  {/* Enabled dot */}
-                  <span
-                    className={cn(
-                      "h-1.5 w-1.5 shrink-0 rounded-full",
-                      p.enabled ? "bg-emerald-500" : "bg-muted-foreground/30",
+              {prompts.map((p) => {
+                const runsState = runsMap[p.id];
+                const isRunsOpen = runsExpanded === p.id;
+                return (
+                  <li key={p.id} className="rounded-md">
+                    {/* Row */}
+                    <div className="group flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-muted transition-colors rounded-md">
+                      {/* Enabled dot */}
+                      <span
+                        className={cn(
+                          "h-1.5 w-1.5 shrink-0 rounded-full",
+                          p.enabled ? "bg-emerald-500" : "bg-muted-foreground/30",
+                        )}
+                        aria-hidden
+                      />
+
+                      {/* Name + cron */}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[11px] text-foreground truncate leading-none">
+                          {p.name}
+                        </p>
+                        <p className="text-[10px] text-muted-foreground font-mono truncate mt-0.5">
+                          {p.cron_expression}
+                        </p>
+                      </div>
+
+                      {/* Last run */}
+                      <span className="shrink-0 text-[9px] text-muted-foreground flex items-center gap-0.5">
+                        <Clock className="h-2.5 w-2.5" />
+                        {formatRelativeTime(p.last_run_at)}
+                      </span>
+
+                      {/* Runs toggle */}
+                      <button
+                        type="button"
+                        onClick={() => toggleRuns(p.id)}
+                        className={cn(
+                          "shrink-0 flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] transition-colors",
+                          isRunsOpen
+                            ? "text-primary bg-primary/10"
+                            : "text-muted-foreground hover:text-foreground hover:bg-muted",
+                        )}
+                        aria-label={isRunsOpen ? "Hide runs" : "Show recent runs"}
+                        aria-expanded={isRunsOpen}
+                      >
+                        <RefreshCw className="h-2.5 w-2.5" />
+                        Runs
+                      </button>
+
+                      {/* Toggle */}
+                      <button
+                        type="button"
+                        onClick={() => handleToggle(p.id)}
+                        disabled={toggling === p.id}
+                        className={cn(
+                          "shrink-0 rounded px-1.5 py-0.5 text-[10px] transition-colors disabled:opacity-50",
+                          p.enabled
+                            ? "text-emerald-700 bg-emerald-500/10 hover:bg-emerald-500/20"
+                            : "text-muted-foreground bg-muted hover:bg-muted/80",
+                        )}
+                        aria-label={p.enabled ? "Disable schedule" : "Enable schedule"}
+                      >
+                        {toggling === p.id ? "…" : p.enabled ? "On" : "Off"}
+                      </button>
+
+                      {/* Edit */}
+                      <button
+                        type="button"
+                        onClick={() => openEdit(p)}
+                        className="hidden group-hover:inline-flex items-center rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                        aria-label={`Edit ${p.name}`}
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </button>
+
+                      {/* Delete */}
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(p.id, p.name)}
+                        disabled={deleting === p.id}
+                        className="hidden group-hover:inline-flex items-center rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
+                        aria-label={`Delete ${p.name}`}
+                      >
+                        {deleting === p.id ? "…" : <Trash2 className="h-3 w-3" />}
+                      </button>
+                    </div>
+
+                    {/* Inline runs expansion */}
+                    {isRunsOpen && (
+                      <div className="mx-2 mb-1 rounded-md border border-border/40 bg-muted/20 px-2.5 py-2 space-y-1">
+                        {runsState === "loading" && (
+                          <div className="space-y-1">
+                            {[...Array(2)].map((_, i) => (
+                              <div key={i} className="h-5 rounded bg-muted/60 animate-pulse" />
+                            ))}
+                          </div>
+                        )}
+                        {runsState === "error" && (
+                          <p className="text-[10px] text-destructive">Failed to load runs.</p>
+                        )}
+                        {Array.isArray(runsState) && runsState.length === 0 && (
+                          <p className="text-[10px] text-muted-foreground leading-snug">
+                            No runs yet — schedule will fire on next cron tick.
+                          </p>
+                        )}
+                        {Array.isArray(runsState) && runsState.length > 0 && (
+                          <ul className="space-y-0.5">
+                            {runsState.map((run) => (
+                              <li key={run.id}>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedRunId((prev) => (prev === run.id ? null : run.id))
+                                  }
+                                  className="w-full flex items-center gap-1.5 text-left rounded px-1 py-0.5 hover:bg-muted/60 transition-colors"
+                                >
+                                  {run.error ? (
+                                    <span className="text-destructive text-[11px] shrink-0">✗</span>
+                                  ) : run.response_text ? (
+                                    <span className="text-emerald-600 text-[11px] shrink-0">✓</span>
+                                  ) : (
+                                    <span className="text-muted-foreground text-[11px] shrink-0">⏱</span>
+                                  )}
+                                  <span className="text-[10px] text-muted-foreground shrink-0">
+                                    {formatRelativeTime(run.run_at)}
+                                  </span>
+                                  {run.duration_ms != null && (
+                                    <span className="text-[9px] text-muted-foreground/60 shrink-0">
+                                      {run.duration_ms}ms
+                                    </span>
+                                  )}
+                                  {run.error && (
+                                    <span className="text-[10px] text-destructive truncate flex-1">
+                                      {run.error}
+                                    </span>
+                                  )}
+                                </button>
+                                {expandedRunId === run.id && run.response_text && (
+                                  <div className="mx-1 mt-0.5 mb-1 rounded bg-background border border-border/40 px-2 py-1.5 text-[10px] text-foreground whitespace-pre-wrap leading-relaxed max-h-40 overflow-y-auto">
+                                    {run.response_text}
+                                  </div>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
                     )}
-                    aria-hidden
-                  />
-
-                  {/* Name + cron */}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[11px] text-foreground truncate leading-none">
-                      {p.name}
-                    </p>
-                    <p className="text-[10px] text-muted-foreground font-mono truncate mt-0.5">
-                      {p.cron_expression}
-                    </p>
-                  </div>
-
-                  {/* Last run */}
-                  <span className="shrink-0 text-[9px] text-muted-foreground flex items-center gap-0.5">
-                    <Clock className="h-2.5 w-2.5" />
-                    {formatRelativeTime(p.last_run_at)}
-                  </span>
-
-                  {/* Toggle */}
-                  <button
-                    type="button"
-                    onClick={() => handleToggle(p.id)}
-                    disabled={toggling === p.id}
-                    className={cn(
-                      "shrink-0 rounded px-1.5 py-0.5 text-[10px] transition-colors disabled:opacity-50",
-                      p.enabled
-                        ? "text-emerald-700 bg-emerald-500/10 hover:bg-emerald-500/20"
-                        : "text-muted-foreground bg-muted hover:bg-muted/80",
-                    )}
-                    aria-label={p.enabled ? "Disable schedule" : "Enable schedule"}
-                  >
-                    {toggling === p.id ? "…" : p.enabled ? "On" : "Off"}
-                  </button>
-
-                  {/* Edit */}
-                  <button
-                    type="button"
-                    onClick={() => openEdit(p)}
-                    className="hidden group-hover:inline-flex items-center rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                    aria-label={`Edit ${p.name}`}
-                  >
-                    <Pencil className="h-3 w-3" />
-                  </button>
-
-                  {/* Delete */}
-                  <button
-                    type="button"
-                    onClick={() => handleDelete(p.id, p.name)}
-                    disabled={deleting === p.id}
-                    className="hidden group-hover:inline-flex items-center rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
-                    aria-label={`Delete ${p.name}`}
-                  >
-                    {deleting === p.id ? "…" : <Trash2 className="h-3 w-3" />}
-                  </button>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ul>
           )}
 
@@ -367,6 +518,98 @@ export function ScheduledPromptsPanel({ jwt }: ScheduledPromptsPanelProps) {
               <Plus className="h-3 w-3" />
               Add schedule
             </button>
+          )}
+
+          {/* All runs link */}
+          {formMode === null && !allRunsOpen && (
+            <button
+              type="button"
+              onClick={openAllRuns}
+              className="w-full text-left text-[10px] text-muted-foreground hover:text-foreground transition-colors px-0.5 pt-0.5"
+            >
+              View all runs →
+            </button>
+          )}
+
+          {/* All runs panel */}
+          {allRunsOpen && (
+            <div className="rounded-md border border-border/40 bg-muted/20 px-3 py-2.5 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <p className="text-[11px] font-medium text-foreground">All recent runs</p>
+                <button
+                  type="button"
+                  onClick={() => setAllRunsOpen(false)}
+                  className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                  aria-label="Close all runs"
+                >
+                  ✕
+                </button>
+              </div>
+              {allRuns === "loading" && (
+                <div className="space-y-1">
+                  {[...Array(3)].map((_, i) => (
+                    <div key={i} className="h-5 rounded bg-muted/60 animate-pulse" />
+                  ))}
+                </div>
+              )}
+              {allRuns === "error" && (
+                <p className="text-[10px] text-destructive">Failed to load runs.</p>
+              )}
+              {Array.isArray(allRuns) && allRuns.length === 0 && (
+                <p className="text-[10px] text-muted-foreground leading-snug">
+                  No runs yet — schedule will fire on next cron tick.
+                </p>
+              )}
+              {Array.isArray(allRuns) && allRuns.length > 0 && (
+                <ul className="space-y-0.5 max-h-48 overflow-y-auto">
+                  {allRuns.map((run) => {
+                    const prompt = prompts.find((p) => p.id === run.prompt_id);
+                    return (
+                      <li key={run.id}>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedRunId((prev) => (prev === run.id ? null : run.id))
+                          }
+                          className="w-full flex items-center gap-1.5 text-left rounded px-1 py-0.5 hover:bg-muted/60 transition-colors"
+                        >
+                          {run.error ? (
+                            <span className="text-destructive text-[11px] shrink-0">✗</span>
+                          ) : run.response_text ? (
+                            <span className="text-emerald-600 text-[11px] shrink-0">✓</span>
+                          ) : (
+                            <span className="text-muted-foreground text-[11px] shrink-0">⏱</span>
+                          )}
+                          {prompt && (
+                            <span className="text-[10px] text-foreground truncate max-w-[80px]">
+                              {prompt.name}
+                            </span>
+                          )}
+                          <span className="text-[10px] text-muted-foreground shrink-0">
+                            {formatRelativeTime(run.run_at)}
+                          </span>
+                          {run.duration_ms != null && (
+                            <span className="text-[9px] text-muted-foreground/60 shrink-0">
+                              {run.duration_ms}ms
+                            </span>
+                          )}
+                          {run.error && (
+                            <span className="text-[10px] text-destructive truncate flex-1">
+                              {run.error}
+                            </span>
+                          )}
+                        </button>
+                        {expandedRunId === run.id && run.response_text && (
+                          <div className="mx-1 mt-0.5 mb-1 rounded bg-background border border-border/40 px-2 py-1.5 text-[10px] text-foreground whitespace-pre-wrap leading-relaxed max-h-40 overflow-y-auto">
+                            {run.response_text}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
           )}
 
           {/* Inline form */}
