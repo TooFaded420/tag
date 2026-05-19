@@ -48,6 +48,7 @@ import { InviteDialog } from "@/components/chat/InviteDialog";
 import { TurnstileGate } from "@/components/chat/TurnstileGate";
 import { MemoryPanel } from "@/components/chat/MemoryPanel";
 import { IntegrationsPanel, readComposioKey } from "@/components/chat/IntegrationsPanel";
+import { AgentActivityLog } from "@/components/chat/AgentActivityLog";
 import { CompareView } from "@/components/chat/CompareView";
 import { AgentView } from "@/components/chat/AgentView";
 import { FileDropzone } from "@/components/chat/FileDropzone";
@@ -171,7 +172,6 @@ const ANON_SESSION_KEY = "tag_anon_session_v1";
 const TAG_ACTIVE_WORKSPACE_KEY = "tag_active_workspace_v1";
 const TEMPERATURE_KEY = "tag_temperature_v1";
 const MODEL_PRESETS_KEY = "tag_model_presets_v1";
-const REQUIRE_CONFIRM_KEY = "tag_require_confirm";
 const DRY_RUN_KEY = "tag_dry_run";
 const PROMPT_TEMPLATES_KEY = "tag_prompt_templates_v1";
 
@@ -344,6 +344,8 @@ interface Thread {
   systemPrompt?: string;
   messageCosts?: Record<string, number>;
   pinnedMessageIds?: string[];
+  tags?: string[];
+  preSummaryMessages?: Message[];
 }
 
 function generateId(): string {
@@ -589,6 +591,7 @@ interface ThreadRowProps {
   onSelect: () => void;
   onDelete: () => void;
   onTogglePin: () => void;
+  onUpdateTags?: (tags: string[]) => void;
   // drag-to-reorder (pinned section only)
   draggable?: boolean;
   onDragStart?: (e: React.DragEvent) => void;
@@ -599,7 +602,10 @@ interface ThreadRowProps {
   isDragOver?: boolean;
 }
 
-function ThreadRow({ thread, active, onSelect, onDelete, onTogglePin, draggable: isDraggable, onDragStart, onDragOver, onDragLeave, onDragEnd, onDrop, isDragOver }: ThreadRowProps) {
+function ThreadRow({ thread, active, onSelect, onDelete, onTogglePin, onUpdateTags, draggable: isDraggable, onDragStart, onDragOver, onDragLeave, onDragEnd, onDrop, isDragOver }: ThreadRowProps) {
+  const [tagInputOpen, setTagInputOpen] = useState(false);
+  const [tagDraft, setTagDraft] = useState("");
+
   const firstMsg = thread.messages.find((m) => m.role === "user");
   const firstMsgText = firstMsg
     ? (firstMsg.parts?.find((p) => p.type === "text") as { type: "text"; text: string } | undefined)?.text
@@ -611,6 +617,19 @@ function ThreadRow({ thread, active, onSelect, onDelete, onTogglePin, draggable:
     (firstMsgText
       ? firstMsgText.slice(0, 52) + (firstMsgText.length > 52 ? "…" : "")
       : "New conversation");
+
+  function commitTags() {
+    if (!onUpdateTags) return;
+    const existing = thread.tags ?? [];
+    const newTags = tagDraft
+      .split(",")
+      .map((t) => t.trim().toLowerCase())
+      .filter((t) => t.length > 0);
+    const merged = Array.from(new Set([...existing, ...newTags]));
+    onUpdateTags(merged);
+    setTagDraft("");
+    setTagInputOpen(false);
+  }
 
   return (
     <li
@@ -648,13 +667,67 @@ function ThreadRow({ thread, active, onSelect, onDelete, onTogglePin, draggable:
           {thread.pinned && <Pin className="inline h-2.5 w-2.5 mr-1 text-primary/70" />}
           {title}
         </p>
+        {/* Tag pills */}
+        {thread.tags && thread.tags.length > 0 && (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {thread.tags.map((tag) => (
+              <span
+                key={tag}
+                onClick={(e) => e.stopPropagation()}
+                className="inline-flex items-center gap-0.5 rounded-full bg-primary/10 px-1.5 py-0 text-[9px] font-medium text-primary/70"
+              >
+                {tag}
+                {onUpdateTags && (
+                  <button
+                    type="button"
+                    aria-label={`Remove tag ${tag}`}
+                    onClick={(e) => { e.stopPropagation(); onUpdateTags((thread.tags ?? []).filter((t) => t !== tag)); }}
+                    className="text-primary/40 hover:text-destructive transition-colors leading-none"
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
         <p className="mt-0.5 font-mono text-[10px] text-muted-foreground/50">
           {relativeTime(thread.updatedAt ?? thread.createdAt)}
         </p>
       </button>
 
-      {/* Hover actions: pin + delete */}
-      <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+      {/* Tag input inline */}
+      {tagInputOpen && (
+        <div className="px-3 pb-1.5" onClick={(e) => e.stopPropagation()}>
+          <input
+            autoFocus
+            type="text"
+            value={tagDraft}
+            onChange={(e) => setTagDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); commitTags(); }
+              if (e.key === "Escape") { setTagInputOpen(false); setTagDraft(""); }
+            }}
+            onBlur={() => { if (tagDraft.trim()) commitTags(); else setTagInputOpen(false); }}
+            placeholder="tag1, tag2…"
+            className="w-full rounded border border-border bg-background px-2 py-0.5 text-[10px] font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40"
+          />
+        </div>
+      )}
+
+      {/* Hover actions: tag + pin + delete */}
+      <div className="absolute right-1.5 top-2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        {onUpdateTags && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setTagInputOpen((o) => !o); }}
+            aria-label="Add tag"
+            className="rounded p-0.5 text-muted-foreground/50 hover:text-primary transition-colors text-[10px] font-mono leading-none"
+            title="Add tag"
+          >
+            #
+          </button>
+        )}
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); onTogglePin(); }}
@@ -794,22 +867,9 @@ export default function Chat() {
     try { localStorage.setItem(DRY_RUN_KEY, String(dryRun)); } catch {}
   }, [dryRun]);
 
-  // ── Feature: Require confirmation for actions ──────────────────────────
-  const [requireConfirm, setRequireConfirm] = useState<boolean>(() => {
-    try {
-      const v = localStorage.getItem(REQUIRE_CONFIRM_KEY);
-      return v === null ? true : v === "true";
-    } catch { return true; }
-  });
-  const requireConfirmRef = useRef(requireConfirm);
-  useEffect(() => {
-    requireConfirmRef.current = requireConfirm;
-    try { localStorage.setItem(REQUIRE_CONFIRM_KEY, String(requireConfirm)); } catch {}
-  }, [requireConfirm]);
-
-  // Pending action confirmation: set when the server returns { status: "pending_approval" }
-  // from tag-agent-tool. Sourced from server response shape, NOT from parsing model output.
-  const [pendingConfirm, setPendingConfirm] = useState<{ pendingId: string; toolName: string; argsJson: string } | null>(null);
+  // requireConfirm and pendingConfirm removed — they had no server-enforced effect
+  // on the chat path (synthetic-public-proxy is a pure text passthrough, no tool
+  // dispatch). Both are only meaningful on the AgentView path (tag-agent-tool).
 
   // ── Feature: Prompt templates ──────────────────────────────────────────
   const [templates, setTemplates] = useState<PromptTemplate[]>(() => loadTemplates());
@@ -833,6 +893,8 @@ export default function Chat() {
     try { return localStorage.getItem(ACTIVE_THREAD_KEY); } catch { return null; }
   });
   const [threadSearch, setThreadSearch] = useState("");
+  const [activeTagFilters, setActiveTagFilters] = useState<string[]>([]);
+  const [summarizing, setSummarizing] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // ── Global cross-thread search ───────────────────────────────────────────
@@ -1043,7 +1105,8 @@ export default function Chat() {
       const liveActiveThread = activeThreadRef.current;
       const liveTemperature = temperatureRef.current;
       const liveDryRun = dryRunRef.current;
-      const liveRequireConfirm = requireConfirmRef.current;
+      // requireConfirm is not read here — see comment below on why confirm/dry-run
+      // have no server-enforced effect on the chat path.
       const reqBody = init?.body ? JSON.parse(init.body as string) : {};
       // Diagnostic — exposes whether the send is even firing and with what
       // identity. If signed-in chats stop working again, the user can paste
@@ -1139,24 +1202,12 @@ export default function Chat() {
         }
       }
 
-      // ── Confirmation guard injection ──────────────────────────────────────
-      // When require-confirm is on and a Composio key is present, instruct the
-      // agent to output an [ACTION_PLAN:...] sentinel before executing any
-      // side-effecting tool so the client can pause and show the confirm modal.
-      const liveComposioKeyForConfirm = readComposioKey() || undefined;
-      if (liveRequireConfirm && !liveDryRun && liveComposioKeyForConfirm) {
-        const confirmMsg = {
-          role: "system",
-          content:
-            "IMPORTANT: Before calling any of these tools — gmail_send, slack_post_message, github_create_issue, linear_create_issue, notion_create_page, calendar_create_event — you MUST first output a single line in EXACTLY this format (no other text on that line):\n[ACTION_PLAN: <toolName>] <args as compact JSON>\nExample: [ACTION_PLAN: gmail_send] {\"to\":\"alice@example.com\",\"subject\":\"Hello\"}\nThen STOP and wait. If the user's next message is [PROCEED], execute the tool. If it is [CANCEL], apologise and do not execute.",
-        };
-        const alreadyHasConfirmGuard = finalMessages.some(
-          (m) => m.role === "system" && m.content.includes("ACTION_PLAN"),
-        );
-        if (!alreadyHasConfirmGuard) {
-          finalMessages = [confirmMsg, ...finalMessages];
-        }
-      }
+      // NOTE: Composio tools are NOT exposed via the Chat surface (useChat →
+      // synthetic-public-proxy). They are only available via AgentView (Pro).
+      // The [ACTION_PLAN:] prompt-injection sentinel was removed — it was a
+      // prompt-injection vector and had no server enforcement anyway.
+      // If/when Composio tools are added here, enforce dry_run + confirmation
+      // via the same server-side flow as AgentView (tag-agent-tool pending_approval).
 
       // ── Image generation path ─────────────────────────────────────────────
       // Early-return BEFORE memory lookup — image generation doesn't use memory
@@ -1660,21 +1711,19 @@ export default function Chat() {
     chatSetMessagesRef.current = chat.setMessages;
   });
 
-  // ── Server-shape confirmation detection ──────────────────────────────────
-  // The [ACTION_PLAN:] regex sentinel has been REMOVED (codex P0 — prompt-injection
-  // vector). The confirmation modal is now triggered ONLY by the server returning
-  // { status: "pending_approval", pending_id, tool, args } from tag-agent-tool.
+  // ── Trust enforcement gap — documented ───────────────────────────────────
+  // The Chat surface (useChat → synthetic-public-proxy) is a pure text passthrough.
+  // synthetic-public-proxy forwards messages[] to synthetic.new and streams back
+  // OpenAI-compat SSE. No tools are defined, no tool_calls are dispatched, and
+  // dry_run / confirmed flags are never sent to tag-agent-tool from this path.
   //
-  // In the Chat.tsx path (useChat → synthetic-public-proxy → AI SDK), tool calls
-  // are executed server-side by the AI SDK. To intercept them, the proxy would need
-  // to surface tool results back to the client. That plumbing does not exist yet.
-  // TODO: When synthetic-public-proxy exposes tool call results in the stream, detect
-  // { status: "pending_approval" } there and call setPendingConfirm accordingly.
+  // Consequence: dry-run mode here is soft-only (a system-message hint to the
+  // model). The confirmation modal and requireConfirm state have been removed
+  // because they could never be triggered on this path.
   //
-  // For the AgentView path, tag-agent-tool directly returns pending_approval and
-  // AgentView surfaces it to the user (see AgentView.tsx callTool handling).
-  // The pendingConfirm state below is wired to the modal and the approve/dismiss
-  // handlers that call tag-integrations action=approve/dismiss.
+  // When Composio tools are eventually wired into the Chat surface, enforce
+  // dry_run + confirmation server-side via the same tag-agent-tool pending_approval
+  // flow as AgentView (see AgentView.tsx callTool → tag-integrations approve/dismiss).
 
   // ── Compute cost when streaming finishes ─────────────────────────────────
   const prevStatusRef = useRef(chat.status);
@@ -2079,6 +2128,129 @@ export default function Chat() {
       return updated;
     });
   }, []);
+
+  // ── Feature: Thread tags ─────────────────────────────────────────────────
+  const updateThreadTags = useCallback((threadId: string, tags: string[]) => {
+    setThreads((prev) => {
+      const updated = prev.map((t) =>
+        t.id === threadId ? { ...t, tags } : t
+      );
+      saveThreads(updated);
+      return updated;
+    });
+  }, []);
+
+  // ── Feature: Auto-summarize long thread ─────────────────────────────────
+  const handleSummarize = useCallback(async () => {
+    if (!activeThreadId || !jwt) return;
+    const thread = threads.find((t) => t.id === activeThreadId);
+    if (!thread || thread.messages.length < 5) return;
+    if (chat.status === "streaming" || chat.status === "submitted") return;
+    setSummarizing(true);
+
+    // Keep the most recent 20 messages intact; summarize everything before
+    const KEEP_RECENT = 20;
+    const msgs = thread.messages;
+    const cutoff = Math.max(0, msgs.length - KEEP_RECENT);
+    const toSummarize = msgs.slice(0, cutoff);
+    const toKeep = msgs.slice(cutoff);
+
+    if (toSummarize.length === 0) { setSummarizing(false); return; }
+
+    // Build a condensed transcript for the summary request
+    const transcript = toSummarize
+      .filter((m) => m.role !== "system")
+      .map((m) => {
+        const body = m.parts
+          ? m.parts.filter((p) => p.type === "text").map((p) => ("text" in p ? p.text : "")).join("")
+          : (m as unknown as { content?: string }).content ?? "";
+        return `${m.role === "user" ? "User" : "Assistant"}: ${body.slice(0, 500)}`;
+      })
+      .join("\n\n");
+
+    const systemMsg = "Summarize the conversation so far into 5-8 key bullet points capturing: decisions made, code/data references, open questions, action items. Output as markdown.";
+
+    try {
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/synthetic-public-proxy`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${jwt}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "user", content: `${systemMsg}\n\nTranscript:\n${transcript}` },
+          ],
+          stream: false,
+        }),
+      });
+
+      let summaryText = "";
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        summaryText = data?.choices?.[0]?.message?.content
+          ?? data?.content?.[0]?.text
+          ?? "";
+      }
+      if (!summaryText) summaryText = `Summarized ${toSummarize.length} earlier messages.`;
+
+      // Build a synthetic summary message
+      const summaryId = generateId();
+      const summaryMessage: Message = {
+        id: summaryId,
+        role: "assistant" as const,
+        parts: [{ type: "text" as const, text: `**Earlier conversation summary (${toSummarize.length} messages)**\n\n${summaryText}` }],
+      };
+
+      const newMessages = [summaryMessage, ...toKeep];
+
+      // Compute surviving messageCosts and pinnedMessageIds
+      const keepIds = new Set(toKeep.map((m) => m.id));
+      const oldCosts = thread.messageCosts ?? {};
+      const newCosts: Record<string, number> = {};
+      for (const [k, v] of Object.entries(oldCosts)) {
+        if (keepIds.has(k)) newCosts[k] = v;
+      }
+      const newPinnedIds = (thread.pinnedMessageIds ?? []).filter((id) => keepIds.has(id));
+
+      setThreads((prev) => {
+        const updated = prev.map((t) => {
+          if (t.id !== activeThreadId) return t;
+          return {
+            ...t,
+            messages: newMessages,
+            messageCosts: newCosts,
+            pinnedMessageIds: newPinnedIds,
+            preSummaryMessages: toSummarize,
+          };
+        });
+        saveThreads(updated);
+        return updated;
+      });
+      chat.setMessages(newMessages);
+    } catch {
+      // silent fail
+    } finally {
+      setSummarizing(false);
+    }
+  }, [activeThreadId, jwt, threads, chat, model]);
+
+  const handleUndoSummarize = useCallback(() => {
+    if (!activeThreadId) return;
+    const thread = threads.find((t) => t.id === activeThreadId);
+    if (!thread?.preSummaryMessages) return;
+    const restored = [...thread.preSummaryMessages, ...thread.messages.slice(1)]; // remove the summary message
+    setThreads((prev) => {
+      const updated = prev.map((t) => {
+        if (t.id !== activeThreadId) return t;
+        return { ...t, messages: restored, preSummaryMessages: undefined };
+      });
+      saveThreads(updated);
+      return updated;
+    });
+    chat.setMessages(restored);
+  }, [activeThreadId, threads, chat]);
 
   function handleExportThread() {
     const thread = threads.find((t) => t.id === activeThreadId);
@@ -2645,11 +2817,23 @@ export default function Chat() {
                     return (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt);
                   });
 
+                // Collect all distinct tags for the filter chip row
+                const allTags = Array.from(
+                  new Set(workspaceThreads.flatMap((t) => t.tags ?? []))
+                ).sort();
+
                 const q = threadSearch.trim().toLowerCase();
+
+                // Apply tag filter on top of workspace filter
+                const tagFiltered = activeTagFilters.length > 0
+                  ? workspaceThreads.filter((t) =>
+                      activeTagFilters.every((tag) => (t.tags ?? []).includes(tag))
+                    )
+                  : workspaceThreads;
 
                 // When searching: flat list filtered by title or any message body
                 if (q) {
-                  const matched = workspaceThreads.filter((t) => {
+                  const matched = tagFiltered.filter((t) => {
                     if (t.title.toLowerCase().includes(q)) return true;
                     return t.messages.some((m) => {
                       const body = m.parts
@@ -2660,6 +2844,37 @@ export default function Chat() {
                   });
                   return (
                     <>
+                      {/* Tag filter chips */}
+                      {allTags.length > 0 && (
+                        <div className="px-2 pt-2 pb-1 flex flex-wrap gap-1">
+                          {allTags.map((tag) => (
+                            <button
+                              key={tag}
+                              type="button"
+                              onClick={() => setActiveTagFilters((prev) =>
+                                prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
+                              )}
+                              className={cn(
+                                "rounded-full px-2 py-0 text-[9px] font-medium border transition-colors",
+                                activeTagFilters.includes(tag)
+                                  ? "bg-primary text-primary-foreground border-primary"
+                                  : "bg-muted/50 text-muted-foreground border-border/50 hover:border-primary/40 hover:text-foreground"
+                              )}
+                            >
+                              #{tag}
+                            </button>
+                          ))}
+                          {activeTagFilters.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setActiveTagFilters([])}
+                              className="text-[9px] text-muted-foreground/50 hover:text-foreground transition-colors"
+                            >
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                      )}
                       <p className="px-2 pt-2 pb-1 font-mono text-[10px] text-muted-foreground/50">
                         {matched.length} of {workspaceThreads.length} threads
                       </p>
@@ -2675,6 +2890,7 @@ export default function Chat() {
                               onSelect={() => selectThread(thread)}
                               onDelete={() => deleteThread(thread.id)}
                               onTogglePin={() => togglePinThread(thread.id)}
+                              onUpdateTags={(tags) => updateThreadTags(thread.id, tags)}
                             />
                           ))}
                         </ul>
@@ -2684,56 +2900,128 @@ export default function Chat() {
                 }
 
                 // Normal: date bucket grouping
-                if (workspaceThreads.length === 0) {
-                  return <p className="px-2 py-3 text-xs text-muted-foreground/50">No conversations yet.</p>;
+                if (tagFiltered.length === 0) {
+                  return (
+                    <>
+                      {allTags.length > 0 && (
+                        <div className="px-2 pt-2 pb-1 flex flex-wrap gap-1">
+                          {allTags.map((tag) => (
+                            <button
+                              key={tag}
+                              type="button"
+                              onClick={() => setActiveTagFilters((prev) =>
+                                prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
+                              )}
+                              className={cn(
+                                "rounded-full px-2 py-0 text-[9px] font-medium border transition-colors",
+                                activeTagFilters.includes(tag)
+                                  ? "bg-primary text-primary-foreground border-primary"
+                                  : "bg-muted/50 text-muted-foreground border-border/50 hover:border-primary/40 hover:text-foreground"
+                              )}
+                            >
+                              #{tag}
+                            </button>
+                          ))}
+                          {activeTagFilters.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setActiveTagFilters([])}
+                              className="text-[9px] text-muted-foreground/50 hover:text-foreground transition-colors"
+                            >
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      <p className="px-2 py-3 text-xs text-muted-foreground/50">
+                        {activeTagFilters.length > 0 ? "No threads match selected tags." : "No conversations yet."}
+                      </p>
+                    </>
+                  );
                 }
-                const groups = groupThreadsByBucket(workspaceThreads);
-                return groups.map(({ bucket, threads: bucketThreads }) => (
-                  <div key={bucket}>
-                    <p className="mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/50 px-2 pt-3 pb-1">
-                      {bucket}
-                    </p>
-                    <ul>
-                      {bucketThreads.map((thread) => (
-                        <ThreadRow
-                          key={thread.id}
-                          thread={thread}
-                          active={thread.id === activeThreadId}
-                          onSelect={() => selectThread(thread)}
-                          onDelete={() => deleteThread(thread.id)}
-                          onTogglePin={() => togglePinThread(thread.id)}
-                          draggable={bucket === "Pinned"}
-                          isDragOver={bucket === "Pinned" && dragOverThreadId === thread.id}
-                          onDragStart={bucket === "Pinned" ? (e) => {
-                            dragThreadIdRef.current = thread.id;
-                            e.dataTransfer.effectAllowed = "move";
-                          } : undefined}
-                          onDragOver={bucket === "Pinned" ? (e) => {
-                            e.preventDefault();
-                            setDragOverThreadId(thread.id);
-                          } : undefined}
-                          onDragLeave={bucket === "Pinned" ? (e) => {
-                            // Only clear if leaving the li itself, not a child element
-                            if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-                              setDragOverThreadId(null);
-                            }
-                          } : undefined}
-                          onDragEnd={bucket === "Pinned" ? () => {
-                            dragThreadIdRef.current = null;
-                            setDragOverThreadId(null);
-                          } : undefined}
-                          onDrop={bucket === "Pinned" ? (e) => {
-                            e.preventDefault();
-                            const dragged = dragThreadIdRef.current;
-                            dragThreadIdRef.current = null;
-                            setDragOverThreadId(null);
-                            if (dragged) handlePinnedDrop(dragged, thread.id);
-                          } : undefined}
-                        />
-                      ))}
-                    </ul>
-                  </div>
-                ));
+                const groups = groupThreadsByBucket(tagFiltered);
+                return (
+                  <>
+                    {/* Tag filter chips — shown above date groups */}
+                    {allTags.length > 0 && (
+                      <div className="px-2 pt-2 pb-1 flex flex-wrap gap-1">
+                        {allTags.map((tag) => (
+                          <button
+                            key={tag}
+                            type="button"
+                            onClick={() => setActiveTagFilters((prev) =>
+                              prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
+                            )}
+                            className={cn(
+                              "rounded-full px-2 py-0 text-[9px] font-medium border transition-colors",
+                              activeTagFilters.includes(tag)
+                                ? "bg-primary text-primary-foreground border-primary"
+                                : "bg-muted/50 text-muted-foreground border-border/50 hover:border-primary/40 hover:text-foreground"
+                            )}
+                          >
+                            #{tag}
+                          </button>
+                        ))}
+                        {activeTagFilters.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setActiveTagFilters([])}
+                            className="text-[9px] text-muted-foreground/50 hover:text-foreground transition-colors"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {groups.map(({ bucket, threads: bucketThreads }) => (
+                      <div key={bucket}>
+                        <p className="mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/50 px-2 pt-3 pb-1">
+                          {bucket}
+                        </p>
+                        <ul>
+                          {bucketThreads.map((thread) => (
+                            <ThreadRow
+                              key={thread.id}
+                              thread={thread}
+                              active={thread.id === activeThreadId}
+                              onSelect={() => selectThread(thread)}
+                              onDelete={() => deleteThread(thread.id)}
+                              onTogglePin={() => togglePinThread(thread.id)}
+                              onUpdateTags={(tags) => updateThreadTags(thread.id, tags)}
+                              draggable={bucket === "Pinned"}
+                              isDragOver={bucket === "Pinned" && dragOverThreadId === thread.id}
+                              onDragStart={bucket === "Pinned" ? (e) => {
+                                dragThreadIdRef.current = thread.id;
+                                e.dataTransfer.effectAllowed = "move";
+                              } : undefined}
+                              onDragOver={bucket === "Pinned" ? (e) => {
+                                e.preventDefault();
+                                setDragOverThreadId(thread.id);
+                              } : undefined}
+                              onDragLeave={bucket === "Pinned" ? (e) => {
+                                // Only clear if leaving the li itself, not a child element
+                                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                                  setDragOverThreadId(null);
+                                }
+                              } : undefined}
+                              onDragEnd={bucket === "Pinned" ? () => {
+                                dragThreadIdRef.current = null;
+                                setDragOverThreadId(null);
+                              } : undefined}
+                              onDrop={bucket === "Pinned" ? (e) => {
+                                e.preventDefault();
+                                const dragged = dragThreadIdRef.current;
+                                dragThreadIdRef.current = null;
+                                setDragOverThreadId(null);
+                                if (dragged) handlePinnedDrop(dragged, thread.id);
+                              } : undefined}
+                            />
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                  </>
+                );
               })()}
             </nav>
 
@@ -2770,6 +3058,9 @@ export default function Chat() {
 
               {/* Integrations panel — per-user Composio OAuth connections */}
               <IntegrationsPanel jwt={jwt} />
+
+              {/* Agent activity log — collapsible tool call history */}
+              <AgentActivityLog jwt={jwt} />
 
               {/* hecz.dev mini-nav — small, unobtrusive, cross-surface links */}
               <div className="flex items-center gap-3 px-2 pt-1 text-[10px] text-muted-foreground/60">
@@ -3329,6 +3620,38 @@ export default function Chat() {
                         <EmptyState onPickPrompt={handlePickPrompt} />
                       ) : (
                         <div className="flex flex-col gap-6">
+                          {/* ── Summarize earlier / undo banner ── */}
+                          {activeThread?.preSummaryMessages && (
+                            <div className="flex items-center justify-between rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+                              <span>
+                                Summarized {activeThread.preSummaryMessages.length} earlier messages
+                              </span>
+                              <button
+                                type="button"
+                                onClick={handleUndoSummarize}
+                                className="text-primary hover:underline text-[11px] ml-3 shrink-0"
+                              >
+                                Undo
+                              </button>
+                            </div>
+                          )}
+                          {!activeThread?.preSummaryMessages && contextStats !== null && (chat.messages.length > 50 || contextStats.pct >= 0.5) && (
+                            <div className="flex items-center justify-between rounded-md border border-border/50 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                              <span>
+                                {chat.messages.length > 50
+                                  ? `${chat.messages.length} messages in this thread`
+                                  : `~${(contextStats.pct * 100).toFixed(0)}% context used`}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={handleSummarize}
+                                disabled={summarizing || chat.status === "streaming" || chat.status === "submitted" || !jwt}
+                                className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] text-foreground hover:bg-muted transition-colors disabled:opacity-40 ml-3 shrink-0"
+                              >
+                                {summarizing ? "Summarizing…" : "Summarize earlier"}
+                              </button>
+                            </div>
+                          )}
                           {/* ── Pinned messages panel ── */}
                           {activeThread?.pinnedMessageIds && activeThread.pinnedMessageIds.length > 0 && (
                             <div className="rounded-lg border border-border/60 bg-muted/40 text-sm">
@@ -3793,15 +4116,6 @@ export default function Chat() {
                     </div>
                   )}
 
-                  {/* Dry-run active banner */}
-                  {dryRun && (
-                    <div className="mx-auto max-w-2xl mb-2 flex items-center gap-1.5 rounded-md border border-amber-400/40 bg-amber-50/60 dark:bg-amber-900/20 px-2.5 py-1">
-                      <Eye className="h-3 w-3 text-amber-600 shrink-0" />
-                      <span className="text-[11px] text-amber-700 dark:text-amber-400">
-                        Dry run active — agent will describe actions but not execute them
-                      </span>
-                    </div>
-                  )}
 
                   {/* Slash command autocomplete — shown above composer when input starts with / */}
                   {slashOpen && (() => {
@@ -4188,108 +4502,6 @@ export default function Chat() {
         );
       })()}
 
-      {/* Action confirmation modal — Feature 1 */}
-      {pendingConfirm && (
-        <>
-          <div
-            className="fixed inset-0 z-50 bg-foreground/30 backdrop-blur-[2px]"
-            aria-hidden
-            onClick={() => {
-              const snapshot = pendingConfirm;
-              setPendingConfirm(null);
-              if (jwt && snapshot) {
-                fetch(`${SUPABASE_URL}/functions/v1/tag-integrations`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
-                  body: JSON.stringify({ action: "dismiss", pending_id: snapshot.pendingId }),
-                }).catch(() => {/* best-effort */});
-              }
-            }}
-          />
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Confirm agent action"
-            className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          >
-            <div className="w-full max-w-md rounded-2xl border border-border bg-card shadow-xl overflow-hidden">
-              {/* Header */}
-              <div className="flex items-center gap-3 px-5 py-4 border-b border-border/60">
-                <span className="text-lg" aria-hidden>
-                  {pendingConfirm.toolName === "gmail_send" ? "📧"
-                    : pendingConfirm.toolName === "slack_post_message" ? "💬"
-                    : pendingConfirm.toolName === "github_create_issue" ? "🐙"
-                    : pendingConfirm.toolName === "linear_create_issue" ? "📋"
-                    : pendingConfirm.toolName === "notion_create_page" ? "📄"
-                    : pendingConfirm.toolName === "calendar_create_event" ? "📅"
-                    : "🔧"}
-                </span>
-                <div>
-                  <p className="text-sm font-semibold text-foreground">
-                    {pendingConfirm.toolName === "gmail_send" ? "Send Gmail"
-                      : pendingConfirm.toolName === "slack_post_message" ? "Post Slack Message"
-                      : pendingConfirm.toolName === "github_create_issue" ? "Create GitHub Issue"
-                      : pendingConfirm.toolName === "linear_create_issue" ? "Create Linear Issue"
-                      : pendingConfirm.toolName === "notion_create_page" ? "Create Notion Page"
-                      : pendingConfirm.toolName === "calendar_create_event" ? "Create Calendar Event"
-                      : pendingConfirm.toolName}
-                  </p>
-                  <p className="text-[11px] text-muted-foreground">Agent wants to take this action on your behalf</p>
-                </div>
-              </div>
-              {/* Args preview — sourced from server-issued pending_id, not model output */}
-              <div className="px-5 py-3">
-                <pre className="rounded-lg bg-muted/60 border border-border/40 px-3 py-2 text-[11px] font-mono text-foreground/80 overflow-x-auto whitespace-pre-wrap break-all max-h-40">
-                  {(() => {
-                    try { return JSON.stringify(JSON.parse(pendingConfirm.argsJson), null, 2); }
-                    catch { return pendingConfirm.argsJson; }
-                  })()}
-                </pre>
-              </div>
-              {/* Footer — approve/dismiss via server (tag-integrations), not [PROCEED]/[CANCEL] messages */}
-              <div className="flex gap-2 px-5 pb-5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const snapshot = pendingConfirm;
-                    setPendingConfirm(null);
-                    // Dismiss: delete the pending_tool_approvals row server-side
-                    if (jwt && snapshot) {
-                      fetch(`${SUPABASE_URL}/functions/v1/tag-integrations`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
-                        body: JSON.stringify({ action: "dismiss", pending_id: snapshot.pendingId }),
-                      }).catch(() => {/* best-effort */});
-                    }
-                  }}
-                  className="flex-1 rounded-full border border-border bg-background px-4 py-2 text-sm text-foreground hover:bg-muted transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const snapshot = pendingConfirm;
-                    setPendingConfirm(null);
-                    // Approve: call tag-integrations action=approve, which re-invokes
-                    // tag-agent-tool with confirmed=true + pending_id (server validates).
-                    if (jwt && snapshot) {
-                      fetch(`${SUPABASE_URL}/functions/v1/tag-integrations`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
-                        body: JSON.stringify({ action: "approve", pending_id: snapshot.pendingId }),
-                      }).catch(() => {/* best-effort */});
-                    }
-                  }}
-                  className="flex-1 rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 transition-opacity"
-                >
-                  Approve &amp; execute
-                </button>
-              </div>
-            </div>
-          </div>
-        </>
-      )}
 
       {/* Pro welcome modal — shown once after checkout return */}
       {showProWelcome && (
