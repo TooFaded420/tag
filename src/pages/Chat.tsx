@@ -5,9 +5,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } fro
 import { supabase } from "@/integrations/supabase/client";
 import {
   BookMarked,
+  Bookmark,
+  BookmarkX,
   Brain,
   Check,
   ChevronDown,
+  ChevronRight,
   Copy,
   Crown,
   Download,
@@ -17,8 +20,10 @@ import {
   LogIn,
   Menu,
   MessageSquarePlus,
+  Pencil,
   Pin,
   PinOff,
+  RefreshCw,
   Search,
   Send,
   Settings2,
@@ -275,6 +280,7 @@ interface Thread {
   pinned?: boolean;
   systemPrompt?: string;
   messageCosts?: Record<string, number>;
+  pinnedMessageIds?: string[];
 }
 
 function generateId(): string {
@@ -698,6 +704,10 @@ export default function Chat() {
   });
   const [tempSliderOpen, setTempSliderOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  // Edit-message state: { msgId, text }
+  const [editingMessage, setEditingMessage] = useState<{ msgId: string; text: string } | null>(null);
+  // Pinned panel collapsed state
+  const [pinnedPanelOpen, setPinnedPanelOpen] = useState(true);
   const exportMenuRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [importError, setImportError] = useState<string | null>(null);
@@ -1773,6 +1783,81 @@ export default function Chat() {
     setPendingImages([]);
     pendingImagesRef.current = [];
   }, [threads, activeThreadId, chat]);
+
+  // ── Feature: Regenerate assistant response ──────────────────────────────
+  const regenerateFromMessage = useCallback((assistantMsgId: string) => {
+    const thread = threads.find((t) => t.id === activeThreadId);
+    if (!thread) return;
+    const msgIndex = thread.messages.findIndex((m) => m.id === assistantMsgId);
+    if (msgIndex < 0) return;
+    // Find the immediately-preceding user message
+    let userMsgIndex = -1;
+    for (let i = msgIndex - 1; i >= 0; i--) {
+      if (thread.messages[i].role === "user") { userMsgIndex = i; break; }
+    }
+    if (userMsgIndex < 0) return; // no preceding user message — no-op
+    const userMsg = thread.messages[userMsgIndex];
+    const userText = userMsg.parts
+      ? userMsg.parts.filter((p: { type?: string }) => p.type === "text").map((p: { text?: string }) => p.text ?? "").join("")
+      : (userMsg as unknown as { content?: string }).content ?? "";
+    if (!userText.trim()) return;
+    // Slice up to and including the user message
+    const sliced = thread.messages.slice(0, userMsgIndex + 1);
+    let newMessages: typeof sliced;
+    try { newMessages = structuredClone(sliced); } catch { newMessages = JSON.parse(JSON.stringify(sliced)); }
+    chat.setMessages(newMessages);
+    hasSentThisSessionRef.current = true;
+    chat.sendMessage({ text: userText });
+  }, [threads, activeThreadId, chat]);
+
+  // ── Feature: Edit user message + branch ─────────────────────────────────
+  const commitEditMessage = useCallback((msgId: string, newText: string) => {
+    const thread = threads.find((t) => t.id === activeThreadId);
+    if (!thread) return;
+    const msgIndex = thread.messages.findIndex((m) => m.id === msgId);
+    if (msgIndex < 0) return;
+    const sliced = thread.messages.slice(0, msgIndex);
+    let base: typeof sliced;
+    try { base = structuredClone(sliced); } catch { base = JSON.parse(JSON.stringify(sliced)); }
+    const newThread: Thread = {
+      id: generateId(),
+      title: (thread.title || "Chat") + " (edit)",
+      createdAt: Date.now(),
+      messages: base,
+      workspace_id: thread.workspace_id,
+      pinned: false,
+      systemPrompt: thread.systemPrompt,
+    };
+    setThreads((prev) => {
+      const updated = [newThread, ...prev];
+      saveThreads(updated);
+      return updated;
+    });
+    setActiveThreadId(newThread.id);
+    try { localStorage.setItem(ACTIVE_THREAD_KEY, newThread.id); } catch {}
+    chat.setMessages(base);
+    setInput("");
+    setMemoryActive(false);
+    setPendingImages([]);
+    pendingImagesRef.current = [];
+    setEditingMessage(null);
+    hasSentThisSessionRef.current = true;
+    chat.sendMessage({ text: newText });
+  }, [threads, activeThreadId, chat]);
+
+  // ── Feature: Pin/unpin individual messages ───────────────────────────────
+  const togglePinMessage = useCallback((msgId: string) => {
+    setThreads((prev) => {
+      const updated = prev.map((t) => {
+        if (t.id !== activeThreadId) return t;
+        const ids = t.pinnedMessageIds ?? [];
+        const newIds = ids.includes(msgId) ? ids.filter((id) => id !== msgId) : [...ids, msgId];
+        return { ...t, pinnedMessageIds: newIds };
+      });
+      saveThreads(updated);
+      return updated;
+    });
+  }, [activeThreadId]);
 
   const saveSystemPrompt = useCallback((threadId: string, prompt: string) => {
     setThreads((prev) => {
@@ -3014,6 +3099,44 @@ export default function Chat() {
                         <EmptyState onPickPrompt={handlePickPrompt} />
                       ) : (
                         <div className="flex flex-col gap-6">
+                          {/* ── Pinned messages panel ── */}
+                          {activeThread?.pinnedMessageIds && activeThread.pinnedMessageIds.length > 0 && (
+                            <div className="rounded-lg border border-border/60 bg-muted/40 text-sm">
+                              <button
+                                type="button"
+                                onClick={() => setPinnedPanelOpen((o) => !o)}
+                                className="flex w-full items-center gap-1.5 px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                              >
+                                {pinnedPanelOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                                <Bookmark className="h-3 w-3" />
+                                Pinned in this thread ({activeThread.pinnedMessageIds.length})
+                              </button>
+                              {pinnedPanelOpen && (
+                                <div className="flex flex-col divide-y divide-border/40">
+                                  {activeThread.pinnedMessageIds.map((pid) => {
+                                    const pinned = chat.messages.find((m) => m.id === pid);
+                                    if (!pinned) return null;
+                                    const pinnedContent = pinned.parts
+                                      ? pinned.parts.filter((p) => p.type === "text").map((p) => ("text" in p ? p.text : "")).join("")
+                                      : (pinned as unknown as { content?: string }).content ?? "";
+                                    const snippet = pinnedContent.slice(0, 120) + (pinnedContent.length > 120 ? "…" : "");
+                                    return (
+                                      <button
+                                        key={pid}
+                                        type="button"
+                                        onClick={() => document.getElementById(`msg-${pid}`)?.scrollIntoView({ behavior: "smooth", block: "center" })}
+                                        className="flex items-start gap-2 px-3 py-2 text-left hover:bg-muted/60 transition-colors"
+                                      >
+                                        <span className="shrink-0 mt-0.5 text-[10px] font-medium text-primary/60 uppercase">{pinned.role === "user" ? "you" : "tag"}</span>
+                                        <span className="text-xs text-muted-foreground leading-relaxed">{snippet}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
                           {chat.messages.map((msg) => {
                             const content = msg.parts
                               ? msg.parts
@@ -3022,11 +3145,50 @@ export default function Chat() {
                                   .join("")
                               : msg.content;
 
+                            const isPinnedMsg = activeThread?.pinnedMessageIds?.includes(msg.id) ?? false;
+
                             if (msg.role === "user") {
+                              const isEditing = editingMessage?.msgId === msg.id;
                               return (
-                                <div key={msg.id} className="flex items-end justify-end gap-2.5">
-                                  <div className="max-w-[75%] rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground leading-relaxed whitespace-pre-wrap">
-                                    {content}
+                                <div key={msg.id} id={`msg-${msg.id}`} className="flex items-end justify-end gap-2.5">
+                                  <div className="flex flex-col items-end gap-1 max-w-[75%]">
+                                    {isEditing ? (
+                                      <div className="flex flex-col gap-1.5 w-full">
+                                        <textarea
+                                          autoFocus
+                                          className="w-full rounded-2xl rounded-br-sm bg-primary/10 border border-primary/30 px-4 py-2.5 text-sm text-foreground leading-relaxed resize-none focus:outline-none focus:border-primary/60 min-h-[60px]"
+                                          value={editingMessage.text}
+                                          onChange={(e) => setEditingMessage({ msgId: msg.id, text: e.target.value })}
+                                          onKeyDown={(e) => {
+                                            if (e.key === "Escape") { e.preventDefault(); setEditingMessage(null); }
+                                            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); commitEditMessage(msg.id, editingMessage.text); }
+                                          }}
+                                        />
+                                        <div className="flex gap-1 justify-end">
+                                          <button type="button" onClick={() => setEditingMessage(null)} className="rounded px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">Cancel</button>
+                                          <button type="button" onClick={() => commitEditMessage(msg.id, editingMessage.text)} className="rounded px-2 py-0.5 text-xs bg-primary text-primary-foreground hover:bg-primary/90 transition-colors">Save &amp; branch</button>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div
+                                        className="rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground leading-relaxed whitespace-pre-wrap cursor-pointer group relative"
+                                        title="Click to edit and branch"
+                                        onClick={() => setEditingMessage({ msgId: msg.id, text: content })}
+                                      >
+                                        {content}
+                                        <Pencil className="absolute top-1.5 right-1.5 h-2.5 w-2.5 opacity-0 group-hover:opacity-40 transition-opacity" />
+                                      </div>
+                                    )}
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => togglePinMessage(msg.id)}
+                                        title={isPinnedMsg ? "Unpin message" : "Pin message"}
+                                        className={cn("inline-flex items-center rounded px-1 py-0.5 text-[10px] transition-colors", isPinnedMsg ? "text-primary/70 hover:text-primary" : "text-muted-foreground/40 hover:text-foreground hover:bg-muted")}
+                                      >
+                                        {isPinnedMsg ? <BookmarkX className="h-3 w-3" /> : <Bookmark className="h-3 w-3" />}
+                                      </button>
+                                    </div>
                                   </div>
                                   <div className="h-7 w-7 shrink-0 rounded-full bg-primary/20 flex items-center justify-center text-[11px] font-semibold text-primary uppercase">
                                     {userId ? userId.slice(0, 1) : "Y"}
@@ -3088,6 +3250,24 @@ export default function Chat() {
                                         className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground/50 hover:text-foreground hover:bg-muted transition-colors"
                                       >
                                         <GitFork className="h-3 w-3" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => regenerateFromMessage(msg.id)}
+                                        title="Regenerate response"
+                                        aria-label="Regenerate response"
+                                        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground/50 hover:text-foreground hover:bg-muted transition-colors"
+                                      >
+                                        <RefreshCw className="h-3 w-3" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => togglePinMessage(msg.id)}
+                                        title={isPinnedMsg ? "Unpin message" : "Pin message"}
+                                        aria-label={isPinnedMsg ? "Unpin message" : "Pin message"}
+                                        className={cn("inline-flex items-center rounded px-1.5 py-0.5 text-[10px] transition-colors", isPinnedMsg ? "text-primary/70 hover:text-primary" : "text-muted-foreground/50 hover:text-foreground hover:bg-muted")}
+                                      >
+                                        {isPinnedMsg ? <BookmarkX className="h-3 w-3" /> : <Bookmark className="h-3 w-3" />}
                                       </button>
                                       {activeThread?.messageCosts?.[msg.id] != null && activeThread.messageCosts[msg.id] > 0 && (
                                         <span className="font-mono text-[10px] text-muted-foreground/40 ml-1" title="est. output cost only">
