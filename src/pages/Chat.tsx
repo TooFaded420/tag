@@ -4721,6 +4721,7 @@ export default function Chat() {
         open={byokOpen}
         onClose={() => setByokOpen(false)}
         onKeysChange={setByokKeys}
+        jwt={jwt}
       />
 
       <AccountDrawer
