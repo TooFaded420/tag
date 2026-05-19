@@ -87,7 +87,6 @@ export function AgentActivityLog({ jwt }: AgentActivityLogProps) {
   const [expanded, setExpanded] = useState(false);
   const [entries, setEntries] = useState<ToolCallEntry[]>([]);
   const [loading, setLoading] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [error, setError] = useState(false);
 
   // Filter state
@@ -95,8 +94,8 @@ export function AgentActivityLog({ jwt }: AgentActivityLogProps) {
   const [toolSearch, setToolSearch] = useState("");
   const [dateRange, setDateRange] = useState<DateRange>("all");
 
-  // Expand-all state
-  const [allExpanded, setAllExpanded] = useState(false);
+  // FIX 9: unified expandedIds set — supports individual toggle + expand/collapse all
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     if (!jwt) return;
@@ -182,22 +181,27 @@ export function AgentActivityLog({ jwt }: AgentActivityLogProps) {
     });
   }
 
-  // When expand-all toggles, set expandedId or clear it via a sentinel
-  const expandedIds = useMemo<Set<string>>(() => {
-    if (allExpanded) return new Set(filteredEntries.map((e) => e.id));
-    return new Set(expandedId ? [expandedId] : []);
-  }, [allExpanded, filteredEntries, expandedId]);
+  // FIX 9: derived allExpanded from set size
+  const allExpanded = filteredEntries.length > 0 && expandedIds.size === filteredEntries.length &&
+    filteredEntries.every((e) => expandedIds.has(e.id));
 
   function handleEntryToggle(id: string) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
+  function handleExpandAll() {
     if (allExpanded) {
-      // Switch to individual mode, collapse this one
-      const remaining = new Set(filteredEntries.map((e) => e.id));
-      remaining.delete(id);
-      // We can't store a full set easily with existing state — simplest: turn off expand-all
-      setAllExpanded(false);
-      setExpandedId(null);
+      setExpandedIds(new Set());
     } else {
-      setExpandedId((prev) => (prev === id ? null : id));
+      setExpandedIds(new Set(filteredEntries.map((e) => e.id)));
     }
   }
 
@@ -228,7 +232,7 @@ export function AgentActivityLog({ jwt }: AgentActivityLogProps) {
           <div className="flex items-center justify-between">
             <button
               type="button"
-              onClick={() => setAllExpanded((v) => !v)}
+              onClick={handleExpandAll}
               className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
               title={allExpanded ? "Collapse all" : "Expand all"}
             >

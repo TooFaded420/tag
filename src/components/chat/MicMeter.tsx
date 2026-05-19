@@ -16,9 +16,22 @@ export function MicMeter({ stream, active }: MicMeterProps) {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
 
+  // FIX 3: suspend/resume the singleton AudioContext instead of creating a new
+  // one each activation to avoid AudioContext leaks under rapid start/stop.
   useEffect(() => {
     if (!active || !stream) {
-      cleanup();
+      // Suspend and disconnect on deactivation rather than close
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      sourceRef.current?.disconnect();
+      sourceRef.current = null;
+      analyserRef.current = null;
+      ctxRef.current?.suspend();
+      dotsRef.current.forEach((d) => {
+        if (d) { d.style.opacity = "0.2"; d.style.transform = "scaleY(1)"; }
+      });
       return;
     }
 
@@ -26,13 +39,19 @@ export function MicMeter({ stream, active }: MicMeterProps) {
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioCtx) return;
 
-    const ctx = new AudioCtx();
+    // Reuse existing context if available; create once
+    if (!ctxRef.current) {
+      ctxRef.current = new AudioCtx();
+    } else if (ctxRef.current.state === "suspended") {
+      ctxRef.current.resume();
+    }
+    const ctx = ctxRef.current;
+
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 64;
     const source = ctx.createMediaStreamSource(stream);
     source.connect(analyser);
 
-    ctxRef.current = ctx;
     analyserRef.current = analyser;
     sourceRef.current = source;
 
@@ -56,27 +75,27 @@ export function MicMeter({ stream, active }: MicMeterProps) {
     }
     rafRef.current = requestAnimationFrame(tick);
 
-    return cleanup;
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      sourceRef.current?.disconnect();
+      sourceRef.current = null;
+      analyserRef.current = null;
+      ctxRef.current?.suspend();
+      dotsRef.current.forEach((d) => {
+        if (d) { d.style.opacity = "0.2"; d.style.transform = "scaleY(1)"; }
+      });
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, stream]);
 
-  function cleanup() {
-    if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-    sourceRef.current?.disconnect();
-    sourceRef.current = null;
-    analyserRef.current = null;
-    if (ctxRef.current && ctxRef.current.state !== "closed") {
-      ctxRef.current.close();
-    }
+  // Close AudioContext on final unmount
+  useEffect(() => () => {
+    ctxRef.current?.close();
     ctxRef.current = null;
-    // Reset dot opacity
-    dotsRef.current.forEach((d) => {
-      if (d) { d.style.opacity = "0.2"; d.style.transform = "scaleY(1)"; }
-    });
-  }
+  }, []);
 
   if (!active) return null;
 

@@ -944,7 +944,21 @@ export default function Chat() {
 
   // ── Smart notifications ──────────────────────────────────────────────────
   const [notifUnseenCount, setNotifUnseenCount] = useState(0);
-  const originalTitleRef = useRef("Tag — Multi-Model Chat | hecz.dev");
+  const [notifDenied, setNotifDenied] = useState(false);
+  const originalTitleRef = useRef("");
+
+  // FIX 6: capture actual document.title on mount before any mutation
+  useEffect(() => {
+    originalTitleRef.current = document.title;
+  }, []);
+
+  // FIX 7: sync sidebar open state with viewport width breakpoint
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 768px)");
+    const handler = (e: MediaQueryListEvent) => setSidebarOpen(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
 
   // Reset unseen counter + restore title when the tab regains focus
   useEffect(() => {
@@ -3163,12 +3177,27 @@ export default function Chat() {
                 <button
                   type="button"
                   onClick={() => {
-                    Notification.requestPermission().catch(() => {});
+                    Notification.requestPermission().then((result) => {
+                      if (result === "denied") setNotifDenied(true);
+                    }).catch(() => {});
                   }}
                   className="w-full text-left text-[10px] text-muted-foreground/60 hover:text-primary transition-colors px-2 py-0.5"
                 >
                   Enable notifications
                 </button>
+              )}
+              {/* FIX 5: inline denied feedback — no toast */}
+              {notifDenied && (
+                <p className="text-[10px] text-destructive/80 px-2 py-0.5 leading-snug">
+                  Notifications denied — enable in browser settings to receive them.
+                  <button
+                    type="button"
+                    onClick={() => setNotifDenied(false)}
+                    className="ml-1.5 underline hover:no-underline"
+                  >
+                    Dismiss
+                  </button>
+                </p>
               )}
 
               {/* Integrations panel — per-user Composio OAuth connections */}

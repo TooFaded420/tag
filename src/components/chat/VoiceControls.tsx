@@ -59,11 +59,7 @@ export function MicButton({ onTranscript, byokKey }: MicButtonProps) {
   const startingRef = useRef(false);
   const langMenuRef = useRef<HTMLDivElement | null>(null);
 
-  // Hide if MediaRecorder unsupported (older Safari, locked iOS)
-  if (typeof MediaRecorder === "undefined") return null;
-
   // Cleanup on unmount
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   useEffect(() => {
     return () => {
       if (recorderRef.current?.state === "recording") recorderRef.current.stop();
@@ -73,8 +69,8 @@ export function MicButton({ onTranscript, byokKey }: MicButtonProps) {
     };
   }, []);
 
+  // FIX 10: early return moved to after all hooks to avoid Rules of Hooks violation
   // Close lang menu on outside click
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   useEffect(() => {
     if (!showLangMenu) return;
     function handle(e: MouseEvent) {
@@ -85,6 +81,9 @@ export function MicButton({ onTranscript, byokKey }: MicButtonProps) {
     document.addEventListener("mousedown", handle);
     return () => document.removeEventListener("mousedown", handle);
   }, [showLangMenu]);
+
+  // FIX 10: early return after all hooks
+  if (typeof MediaRecorder === "undefined") return null;
 
   async function start() {
     if (!byokKey) return;
@@ -185,7 +184,7 @@ export function MicButton({ onTranscript, byokKey }: MicButtonProps) {
   }
   function handlePointerLeave() {
     if (!holdMode) return;
-    if (isRecording) stop();
+    if (recorderRef.current?.state === "recording") stop();
   }
   function handleClick() {
     if (holdMode) return; // handled by pointer events

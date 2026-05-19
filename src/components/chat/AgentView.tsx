@@ -230,6 +230,22 @@ interface ConvMessage {
 }
 
 // ---------------------------------------------------------------------------
+// AbortSignal polyfill — AbortSignal.any() is not available on Safari <17.4 / Firefox <124
+// ---------------------------------------------------------------------------
+
+function combineSignals(signals: (AbortSignal | undefined)[]): AbortSignal {
+  const filtered = signals.filter((s): s is AbortSignal => s !== undefined);
+  if (filtered.length === 0) return new AbortController().signal;
+  if (filtered.length === 1) return filtered[0];
+  const controller = new AbortController();
+  for (const s of filtered) {
+    if (s.aborted) { controller.abort(s.reason); break; }
+    s.addEventListener("abort", () => controller.abort(s.reason), { once: true });
+  }
+  return controller.signal;
+}
+
+// ---------------------------------------------------------------------------
 // Edge fn caller
 // ---------------------------------------------------------------------------
 
@@ -242,10 +258,9 @@ async function callTool(
 ): Promise<{ ok: true; result: string } | { ok: false; code: string; message: string }> {
   try {
     // Combine the 80s timeout signal with the optional external abort signal
+    // Note: AbortSignal.any() is not available on Safari <17.4 / Firefox <124.
     const timeoutSignal = AbortSignal.timeout(80_000);
-    const signal = abortSignal
-      ? AbortSignal.any([timeoutSignal, abortSignal])
-      : timeoutSignal;
+    const signal = combineSignals([timeoutSignal, abortSignal]);
 
     const res = await fetch(`${SUPABASE_URL}/functions/v1/tag-agent-tool`, {
       method: "POST",
@@ -1069,7 +1084,7 @@ export function AgentView({ jwt, tier, onUpgrade }: AgentViewProps) {
             }}
             disabled={running}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey || !e.shiftKey)) {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing && (e.metaKey || e.ctrlKey || !e.shiftKey)) {
                 e.preventDefault();
                 if (!canSend) return;
                 const trimmed = input.trim();
