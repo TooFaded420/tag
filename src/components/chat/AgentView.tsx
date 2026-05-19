@@ -609,30 +609,6 @@ interface AgentViewProps {
 }
 
 export function AgentView({ jwt, tier, onUpgrade }: AgentViewProps) {
-  // ── Pro gate ───────────────────────────────────────────────────────────────
-  if (tier !== "pro") {
-    return (
-      <div className="flex flex-1 items-center justify-center py-16">
-        <div className="max-w-sm w-full rounded-xl border border-border bg-card p-8 text-center shadow-sm">
-          <Crown className="mx-auto mb-4 h-10 w-10 text-primary" />
-          <h2 className="text-lg font-semibold text-foreground mb-2">Pro Feature</h2>
-          <p className="text-sm text-muted-foreground mb-6">
-            Tag Agent gives you a sandboxed Linux environment. Run Python, Node.js, and bash — the
-            model handles the agentic loop. Upgrade to unlock.
-          </p>
-          <button
-            type="button"
-            onClick={onUpgrade}
-            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 transition-opacity"
-          >
-            <Crown className="h-4 w-4" />
-            Upgrade for $7/mo
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   // ── State ──────────────────────────────────────────────────────────────────
   const [items, setItems] = useState<AgentItem[]>([]);
   const [input, setInput] = useState("");
@@ -859,6 +835,30 @@ export function AgentView({ jwt, tier, onUpgrade }: AgentViewProps) {
 
   const canSend = !running && input.trim().length > 0 && !!jwt;
   const isEmpty = items.length === 0;
+
+  // ── Pro gate ───────────────────────────────────────────────────────────────
+  if (tier !== "pro") {
+    return (
+      <div className="flex flex-1 items-center justify-center py-16">
+        <div className="max-w-sm w-full rounded-xl border border-border bg-card p-8 text-center shadow-sm">
+          <Crown className="mx-auto mb-4 h-10 w-10 text-primary" />
+          <h2 className="text-lg font-semibold text-foreground mb-2">Pro Feature</h2>
+          <p className="text-sm text-muted-foreground mb-6">
+            Tag Agent gives you a sandboxed Linux environment. Run Python, Node.js, and bash — the
+            model handles the agentic loop. Upgrade to unlock.
+          </p>
+          <button
+            type="button"
+            onClick={onUpgrade}
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 transition-opacity"
+          >
+            <Crown className="h-4 w-4" />
+            Upgrade for $7/mo
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   // ── Render ─────────────────────────────────────────────────────────────────
 

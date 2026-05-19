@@ -1810,7 +1810,9 @@ export default function Chat() {
     const blob = new Blob([lines.join("\n")], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    const slug = title.replace(/[^a-z0-9-]+/gi, "-").slice(0, 40).replace(/-+$/, "") || `tag-thread-${thread.id.slice(0, 8)}`;
+    // FIX 4: "tag-" prefix for defense in depth. Browser <a download> strips path
+    // separators today, but this would be fragile if the logic ever moves server-side.
+    const slug = "tag-" + (title.replace(/[^a-z0-9-]+/gi, "-").slice(0, 40).replace(/-+$/, "") || `thread-${thread.id.slice(0, 8)}`);
     a.href = url;
     a.download = `${slug}.md`;
     a.click();
@@ -1833,10 +1835,34 @@ export default function Chat() {
       exportedAt: new Date().toISOString(),
       exportedFrom: "tag — hecz.dev/chat",
     };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    // FIX 5: Guard against circular references in payload (e.g. if message parts ever
+    // contain self-referential objects). Primary: standard stringify. Fallback: WeakSet
+    // cycle detector that substitutes "[Circular]" for any repeated object reference.
+    let jsonStr: string;
+    try {
+      jsonStr = JSON.stringify(payload, null, 2);
+    } catch {
+      try {
+        const seen = new WeakSet();
+        jsonStr = JSON.stringify(payload, (_key, value) => {
+          if (typeof value === "object" && value !== null) {
+            if (seen.has(value)) return "[Circular]";
+            seen.add(value);
+          }
+          return value;
+        }, 2);
+      } catch (err) {
+        setImportError(`Export failed: ${err instanceof Error ? err.message : "unknown error"}`);
+        setTimeout(() => setImportError(null), 8000);
+        return;
+      }
+    }
+    const blob = new Blob([jsonStr], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    const slug = title.replace(/[^a-z0-9-]+/gi, "-").slice(0, 40).replace(/-+$/, "") || `tag-thread-${thread.id.slice(0, 8)}`;
+    // FIX 4: "tag-" prefix for defense in depth. Browser <a download> strips path
+    // separators today, but this would be fragile if the logic ever moves server-side.
+    const slug = "tag-" + (title.replace(/[^a-z0-9-]+/gi, "-").slice(0, 40).replace(/-+$/, "") || `thread-${thread.id.slice(0, 8)}`);
     a.href = url;
     a.download = `${slug}-${date}.json`;
     a.click();
@@ -1855,6 +1881,34 @@ export default function Chat() {
         if (typeof parsed !== "object" || parsed === null) throw new Error("Invalid JSON structure.");
         if (!Array.isArray(parsed.messages)) throw new Error("Missing required field: messages (array).");
         if (typeof parsed.title !== "string") throw new Error("Missing required field: title (string).");
+
+        // FIX 1: Per-message validation — allowlist roles to ["user","assistant"] only.
+        // "system" role is intentionally excluded: a malicious import with system-role
+        // messages could override system prompts when the thread is resumed, enabling
+        // prompt-injection via crafted JSON files.
+        const ALLOWED_ROLES = new Set(["user", "assistant"]);
+        const validatedMessages = parsed.messages.map((m: unknown, i: number) => {
+          if (typeof m !== "object" || m === null) throw new Error(`Message at index ${i} is not an object.`);
+          const msg = m as Record<string, unknown>;
+          // Role must be in allowlist
+          if (!ALLOWED_ROLES.has(msg.role as string)) {
+            throw new Error(`Message at index ${i} has disallowed role "${msg.role}". Only "user" and "assistant" are permitted.`);
+          }
+          // content (string) OR parts (array) must be present
+          const hasContent = typeof msg.content === "string";
+          const hasParts = Array.isArray(msg.parts);
+          if (!hasContent && !hasParts) {
+            throw new Error(`Message at index ${i} must have a "content" string or "parts" array.`);
+          }
+          // Auto-generate id if missing or non-string
+          const id: string = typeof msg.id === "string" ? msg.id : generateId();
+          // Strip unknown top-level keys — keep only known safe fields
+          const clean: Record<string, unknown> = { id, role: msg.role };
+          if (hasContent) clean.content = msg.content;
+          if (hasParts) clean.parts = msg.parts;
+          return clean;
+        });
+
         // Validate messageCosts shape if present
         const messageCosts: Record<string, number> = {};
         if (parsed.messageCosts && typeof parsed.messageCosts === "object") {
@@ -1867,12 +1921,15 @@ export default function Chat() {
           title: parsed.title,
           createdAt: Date.now(),
           updatedAt: Date.now(),
-          messages: parsed.messages,
+          messages: validatedMessages as Message[],
           systemPrompt: typeof parsed.systemPrompt === "string" ? parsed.systemPrompt : undefined,
           messageCosts: Object.keys(messageCosts).length > 0 ? messageCosts : undefined,
         };
-        // Apply model + temperature if valid
-        if (typeof parsed.model === "string" && parsed.model) {
+        // FIX 2: Validate imported model string against MODELS registry.
+        // Reject unknown model IDs silently (keep current model) rather than
+        // applying an arbitrary string that could confuse the backend or UI.
+        const knownModelIds = new Set(MODELS.map((m) => m.id));
+        if (typeof parsed.model === "string" && parsed.model && knownModelIds.has(parsed.model)) {
           setModel(parsed.model);
         }
         if (typeof parsed.temperature === "number") {
@@ -2059,15 +2116,37 @@ export default function Chat() {
   const contextStats = useMemo(() => {
     const thread = threads.find((t) => t.id === activeThreadId);
     if (!thread || thread.messages.length === 0) return null;
+    // FIX 3: Image token estimate — each image part is ~800 tokens (Vision API rough average
+    // for a 512×512 tile; actual cost varies by resolution but 800 is a safe conservative floor).
+    const IMAGE_TOKEN_COST = 800;
+    let imageTokens = 0;
     const msgChars = thread.messages.reduce((sum, msg) => {
+      // Count image tokens from parts array
+      if (msg.parts) {
+        for (const p of msg.parts) {
+          if ((p as { type?: string }).type === "image" || (p as { type?: string }).type === "image_url") {
+            imageTokens += IMAGE_TOKEN_COST;
+          }
+        }
+      }
+      // Count image tokens from content array (multi-modal message format)
+      const contentArr = (msg as unknown as { content?: unknown }).content;
+      if (Array.isArray(contentArr)) {
+        for (const part of contentArr) {
+          if (typeof part === "object" && part !== null) {
+            const t = (part as { type?: string }).type;
+            if (t === "image" || t === "image_url") imageTokens += IMAGE_TOKEN_COST;
+          }
+        }
+      }
       const body = msg.parts
         ? msg.parts.filter((p) => p.type === "text").map((p) => ("text" in p ? p.text : "")).join("")
-        : (msg as unknown as { content?: string }).content ?? "";
+        : typeof contentArr === "string" ? contentArr : "";
       return sum + body.length;
     }, 0);
     const sysPromptChars = (thread.systemPrompt ?? "").length;
     const SYS_OVERHEAD = 300; // rough tokens for system framing
-    const msgTokens = Math.round(msgChars / 3.3);
+    const msgTokens = Math.round(msgChars / 3.3) + imageTokens;
     const sysTokens = Math.round(sysPromptChars / 3.3) + SYS_OVERHEAD;
     const totalTokens = msgTokens + sysTokens;
     const windowSize = getContextWindow(model);
