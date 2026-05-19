@@ -49,6 +49,7 @@ import { TurnstileGate } from "@/components/chat/TurnstileGate";
 import { MemoryPanel } from "@/components/chat/MemoryPanel";
 import { IntegrationsPanel, readComposioKey } from "@/components/chat/IntegrationsPanel";
 import { AgentActivityLog } from "@/components/chat/AgentActivityLog";
+import { NotificationCenter } from "@/components/chat/NotificationCenter";
 import { UsageDashboard } from "@/components/chat/UsageDashboard";
 import { ScheduledPromptsPanel } from "@/components/chat/ScheduledPromptsPanel";
 import { CompareView } from "@/components/chat/CompareView";
@@ -3363,6 +3364,11 @@ export default function Chat() {
             {/* Model picker — chat mode only */}
             {view === "chat" && (
               <ModelPicker value={model} onChange={setModel} onUpgrade={handleUpgrade} tier={tier} />
+            )}
+
+            {/* Notification center */}
+            {view === "chat" && jwt && (
+              <NotificationCenter jwt={jwt} />
             )}
 
             {/* Settings overflow popover */}
