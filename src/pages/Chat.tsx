@@ -821,6 +821,48 @@ export default function Chat() {
   const [userId, setUserId] = useState<string | null>(null);
   const [jwt, setJwt] = useState<string | null>(null);
   const [tier, setTier] = useState<"free" | "pro">("free");
+
+  // ── Online status indicator ─────────────────────────────────────────────
+  const [isOnline, setIsOnline] = useState(() => navigator.onLine);
+  const [lastReqOk, setLastReqOk] = useState(true);
+  useEffect(() => {
+    const handleOnline  = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener("online",  handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online",  handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  // ── Auto-save indicator ─────────────────────────────────────────────────
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function saveThreadsWithIndicator(threads: Thread[]): void {
+    setSaveState("saving");
+    saveThreads(threads);
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    // Short pulse — resolve to "saved" after 300ms
+    saveTimerRef.current = setTimeout(() => {
+      setSaveState("saved");
+      saveTimerRef.current = setTimeout(() => setSaveState("idle"), 2000);
+    }, 300);
+  }
+
+  // ── Model info popover ──────────────────────────────────────────────────
+  const [modelInfoOpen, setModelInfoOpen] = useState(false);
+  const modelInfoRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!modelInfoOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (modelInfoRef.current && !modelInfoRef.current.contains(e.target as Node)) {
+        setModelInfoOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [modelInfoOpen]);
   const [upgrading, setUpgrading] = useState(false);
   const [byokOpen, setByokOpen] = useState(false);
   const [byokKeys, setByokKeys] = useState(() => readBYOKKeys());
@@ -1824,7 +1866,7 @@ export default function Chat() {
       const updated = prev.map((t) =>
         t.id === activeThreadId ? { ...t, messages: chat.messages, updatedAt: Date.now() } : t
       );
-      saveThreads(updated);
+      saveThreadsWithIndicator(updated);
       return updated;
     });
   }, [chat.messages, activeThreadId]);
@@ -1874,7 +1916,7 @@ export default function Chat() {
           ? { ...t, messageCosts: { ...(t.messageCosts ?? {}), [lastAssistant.id]: cost } }
           : t
       );
-      saveThreads(updated);
+      saveThreadsWithIndicator(updated);
       return updated;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1906,7 +1948,7 @@ export default function Chat() {
           ? { ...t, title: generated }
           : t
       );
-      saveThreads(updated);
+      saveThreadsWithIndicator(updated);
       return updated;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1919,6 +1961,7 @@ export default function Chat() {
   useEffect(() => {
     if (chat.error && hasSentThisSessionRef.current) {
       setShowError(true);
+      setLastReqOk(false);
     }
   }, [chat.error]);
 
@@ -1926,7 +1969,10 @@ export default function Chat() {
     if (chat.status === "streaming" || chat.status === "submitted") {
       setShowError(false);
     }
-  }, [chat.status]);
+    if (chat.status === "ready" && hasSentThisSessionRef.current && !chat.error) {
+      setLastReqOk(true);
+    }
+  }, [chat.status, chat.error]);
 
   // Note: previous versions had a jwt-change useEffect here that dropped
   // trailing user messages and cleared showError on any jwt transition.
@@ -1953,7 +1999,7 @@ export default function Chat() {
     };
     setThreads((prev) => {
       const updated = [newThread, ...prev];
-      saveThreads(updated);
+      saveThreadsWithIndicator(updated);
       return updated;
     });
     setActiveThreadId(newThread.id);
@@ -2034,7 +2080,7 @@ export default function Chat() {
           const updated = prev.map((t) =>
             t.id === activeThreadId ? { ...t, messages: [] } : t
           );
-          saveThreads(updated);
+          saveThreadsWithIndicator(updated);
           return updated;
         });
         return;
@@ -2071,7 +2117,7 @@ export default function Chat() {
     (threadId: string) => {
       setThreads((prev) => {
         const updated = prev.filter((t) => t.id !== threadId);
-        saveThreads(updated);
+        saveThreadsWithIndicator(updated);
         return updated;
       });
       autoTitledThreadsRef.current.delete(threadId);
@@ -2087,7 +2133,7 @@ export default function Chat() {
       const updated = prev.map((t) =>
         t.id === threadId ? { ...t, pinned: !t.pinned } : t
       );
-      saveThreads(updated);
+      saveThreadsWithIndicator(updated);
       return updated;
     });
   }, []);
@@ -2104,7 +2150,7 @@ export default function Chat() {
       const [dragged] = reordered.splice(dragIdx, 1);
       reordered.splice(targetIdx, 0, dragged);
       const updated = [...reordered, ...unpinned];
-      saveThreads(updated);
+      saveThreadsWithIndicator(updated);
       return updated;
     });
   }, []);
@@ -2133,7 +2179,7 @@ export default function Chat() {
     };
     setThreads((prev) => {
       const updated = [newThread, ...prev];
-      saveThreads(updated);
+      saveThreadsWithIndicator(updated);
       return updated;
     });
     setActiveThreadId(newThread.id);
@@ -2179,7 +2225,7 @@ export default function Chat() {
     };
     setThreads((prev) => {
       const updated = [newThread, ...prev];
-      saveThreads(updated);
+      saveThreadsWithIndicator(updated);
       return updated;
     });
     setActiveThreadId(newThread.id);
@@ -2216,7 +2262,7 @@ export default function Chat() {
     };
     setThreads((prev) => {
       const updated = [newThread, ...prev];
-      saveThreads(updated);
+      saveThreadsWithIndicator(updated);
       return updated;
     });
     setActiveThreadId(newThread.id);
@@ -2240,7 +2286,7 @@ export default function Chat() {
         const newIds = ids.includes(msgId) ? ids.filter((id) => id !== msgId) : [...ids, msgId];
         return { ...t, pinnedMessageIds: newIds };
       });
-      saveThreads(updated);
+      saveThreadsWithIndicator(updated);
       return updated;
     });
   }, [activeThreadId]);
@@ -2250,7 +2296,7 @@ export default function Chat() {
       const updated = prev.map((t) =>
         t.id === threadId ? { ...t, systemPrompt: prompt } : t
       );
-      saveThreads(updated);
+      saveThreadsWithIndicator(updated);
       return updated;
     });
   }, []);
@@ -2261,7 +2307,7 @@ export default function Chat() {
       const updated = prev.map((t) =>
         t.id === threadId ? { ...t, tags } : t
       );
-      saveThreads(updated);
+      saveThreadsWithIndicator(updated);
       return updated;
     });
   }, []);
@@ -2380,7 +2426,7 @@ export default function Chat() {
             },
           };
         });
-        saveThreads(updated);
+        saveThreadsWithIndicator(updated);
         // Sync chat messages with any late-sent additions.
         if (lateSent.length > 0) chat.setMessages(finalMessages);
         return updated;
@@ -2403,7 +2449,7 @@ export default function Chat() {
         if (t.id !== activeThreadId) return t;
         return { ...t, messages: restored, preSummaryMessages: undefined };
       });
-      saveThreads(updated);
+      saveThreadsWithIndicator(updated);
       return updated;
     });
     chat.setMessages(restored);
@@ -2562,7 +2608,7 @@ export default function Chat() {
         }
         const updated = [newThread, ...threads];
         setThreads(updated);
-        saveThreads(updated);
+        saveThreadsWithIndicator(updated);
         setActiveThreadId(newThread.id);
         try { localStorage.setItem(ACTIVE_THREAD_KEY, newThread.id); } catch {}
         setExportMenuOpen(false);
@@ -3296,11 +3342,99 @@ export default function Chat() {
               </button>
             </div>
 
-            {/* Spacer */}
-            <div className="flex-1" />
+            {/* Spacer + auto-save indicator */}
+            <div className="flex-1 flex items-center gap-1.5">
+              {saveState !== "idle" && (
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1 text-[10px] font-medium transition-opacity duration-300",
+                    saveState === "saving" ? "text-amber-600 animate-pulse" : "text-emerald-600",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "inline-block h-1.5 w-1.5 rounded-full",
+                      saveState === "saving" ? "bg-amber-500" : "bg-emerald-500",
+                    )}
+                  />
+                  {saveState === "saving" ? "Saving…" : "Saved"}
+                </span>
+              )}
+            </div>
 
             {/* Model picker — only in chat mode; agent picks its own model */}
-            {view === "chat" && <ModelPicker value={model} onChange={setModel} onUpgrade={handleUpgrade} tier={tier} />}
+            {view === "chat" && (
+              <div className="flex items-center gap-1">
+                {/* Online status dot */}
+                <span
+                  title={!isOnline ? "Offline" : !lastReqOk ? "Last request failed" : "Connected"}
+                  className={cn(
+                    "inline-block h-2 w-2 rounded-full shrink-0",
+                    !isOnline ? "bg-red-500" : !lastReqOk ? "bg-amber-400" : "bg-emerald-500",
+                  )}
+                />
+                <ModelPicker value={model} onChange={setModel} onUpgrade={handleUpgrade} tier={tier} />
+                {/* Model info popover */}
+                <div className="relative" ref={modelInfoRef}>
+                  <button
+                    type="button"
+                    onClick={() => setModelInfoOpen((o) => !o)}
+                    title="Model info"
+                    aria-label="Model info"
+                    className={cn(
+                      "inline-flex items-center justify-center h-6 w-6 rounded-md text-xs transition-colors",
+                      modelInfoOpen
+                        ? "text-primary bg-primary/10"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted",
+                    )}
+                  >
+                    ⓘ
+                  </button>
+                  {modelInfoOpen && (() => {
+                    const selectedModel = MODELS.find((m) => m.id === model);
+                    const costs = MODEL_COSTS[model];
+                    const ctx = MODEL_CONTEXT_WINDOWS[model] ?? DEFAULT_CONTEXT_WINDOW;
+                    const provider = model.startsWith("hf:") ? "Hugging Face" : model.startsWith("fal:") ? "fal.ai" : "Anthropic";
+                    return (
+                      <div className="absolute right-0 top-full mt-1.5 z-50 w-64 rounded-lg border border-border bg-card shadow-lg p-3 space-y-2">
+                        <p className="text-xs font-semibold text-foreground truncate">{selectedModel?.label ?? model}</p>
+                        <div className="space-y-1 text-[11px] text-muted-foreground">
+                          <div className="flex justify-between">
+                            <span>Provider</span>
+                            <span className="text-foreground font-medium">{provider}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span>Context window</span>
+                            <span className="text-foreground font-medium">{ctx.toLocaleString()} tokens</span>
+                          </div>
+                          {costs ? (
+                            <>
+                              <div className="flex justify-between">
+                                <span>Input cost / 1K</span>
+                                <span className="text-foreground font-medium font-mono">
+                                  {costs.in === 0 ? "Free" : `$${(costs.in / 1000).toFixed(5)}`}
+                                </span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span>Output cost / 1K</span>
+                                <span className="text-foreground font-medium font-mono">
+                                  {costs.out === 0 ? "Free" : `$${(costs.out / 1000).toFixed(5)}`}
+                                </span>
+                              </div>
+                            </>
+                          ) : (
+                            <div className="flex justify-between">
+                              <span>Pricing</span>
+                              <span className="text-foreground font-medium">{selectedModel?.pricing ?? "—"}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
 
             {/* Presets popover — chat mode only */}
             {view === "chat" && (
