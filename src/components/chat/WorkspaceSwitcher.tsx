@@ -138,12 +138,12 @@ export function WorkspaceSwitcher({ jwt, activeWorkspaceId, onChange }: Props) {
       setWorkspaces((prev) => [...prev, ws]);
       onChange(ws.id);
       setOpen(false);
-    } catch (err) {
-      setCreateError((err as Error).message ?? "Failed to create workspace");
-    } finally {
       setCreateLoading(false);
       setCreateName("");
       setCreating(false);
+    } catch (err) {
+      setCreateError((err as Error).message ?? "Failed to create workspace");
+      setCreateLoading(false);
     }
   }
 
@@ -157,12 +157,12 @@ export function WorkspaceSwitcher({ jwt, activeWorkspaceId, onChange }: Props) {
       await fetchWorkspaces();
       onChange(result.workspace_id);
       setOpen(false);
-    } catch (err) {
-      setJoinError((err as Error).message ?? "Failed to accept invite");
-    } finally {
       setJoinLoading(false);
       setJoinToken("");
       setJoining(false);
+    } catch (err) {
+      setJoinError((err as Error).message ?? "Failed to accept invite");
+      setJoinLoading(false);
     }
   }
 
@@ -244,7 +244,7 @@ export function WorkspaceSwitcher({ jwt, activeWorkspaceId, onChange }: Props) {
 
       {/* Dropdown */}
       {open && (
-        <div className="absolute left-0 top-full mt-1.5 z-50 w-64 rounded-xl border border-border bg-card shadow-xl overflow-hidden">
+        <div className="absolute right-0 top-full mt-1.5 z-50 w-64 rounded-xl border border-border bg-card shadow-xl overflow-hidden">
           {/* Header */}
           <div className="px-3 pt-2.5 pb-1">
             <span className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground/50">

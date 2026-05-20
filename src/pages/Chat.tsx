@@ -1048,7 +1048,7 @@ export default function Chat() {
   // ── Sidebar / thread state — declared BEFORE any effect that references them ──
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     if (typeof window === "undefined") return true;
-    return window.innerWidth >= 768; // md: breakpoint — hidden by default on mobile
+    return window.innerWidth >= 1024; // lg: breakpoint — tablets use drawer mode
   });
   const [threads, setThreads] = useState<Thread[]>(() => loadThreads());
   const [activeThreadId, setActiveThreadId] = useState<string | null>(() => {
@@ -2063,21 +2063,21 @@ export default function Chat() {
         setThreadSearch("");
         setSlashOpen(false);
         setGlobalSearchOpen(false);
-        // Close mobile sidebar if open (only meaningful below md breakpoint)
-        if (window.innerWidth < 768) setSidebarOpen(false);
+        // Close mobile sidebar if open (only meaningful below lg breakpoint)
+        if (window.innerWidth < 1024) setSidebarOpen(false);
         return;
       }
 
       if (!mod) return;
 
       // Cmd/Ctrl+Shift+F — open global cross-thread search
-      if (e.key === "f" && e.shiftKey) {
+      if (e.key.toLowerCase() === "f" && e.shiftKey) {
         e.preventDefault();
         setGlobalSearchOpen(true);
         return;
       }
       // Cmd/Ctrl+F — focus sidebar thread search (override browser find)
-      if (e.key === "f" && !e.shiftKey) {
+      if (e.key.toLowerCase() === "f" && !e.shiftKey) {
         e.preventDefault();
         searchInputRef.current?.focus();
         searchInputRef.current?.select();
@@ -2855,7 +2855,8 @@ export default function Chat() {
     const q = globalSearchDebounced.trim().toLowerCase();
     if (q.length < 2) return [];
     const results: SearchResult[] = [];
-    for (const thread of threads) {
+    const scoped = threads.filter(t => (t.workspace_id ?? null) === (activeWorkspaceId ?? null));
+    for (const thread of scoped) {
       for (const msg of thread.messages) {
         if (msg.role === "system") continue;
         const body = msg.parts
@@ -2872,7 +2873,7 @@ export default function Chat() {
       if (results.length >= 40) break;
     }
     return results;
-  }, [globalSearchDebounced, threads]);
+  }, [globalSearchDebounced, threads, activeWorkspaceId]);
 
   // ── Starter prompt pick — sets input and focuses textarea; does not send ──
   function handlePickPrompt(prompt: string) {
@@ -2919,9 +2920,9 @@ export default function Chat() {
             "sidebar",
             "flex flex-col bg-card border-r border-border transition-all duration-200 shrink-0 overflow-hidden",
             sidebarOpen
-              ? "w-56 md:w-64"
+              ? "w-56 lg:w-64"
               : "w-0 overflow-hidden",
-            "fixed inset-y-0 left-0 z-40 md:relative md:z-auto"
+            "fixed inset-y-0 left-0 z-40 lg:relative lg:z-auto"
           )}
         >
           {/* ── Brick skin: tiled SVG wall behind sidebar content ── */}
@@ -3279,7 +3280,7 @@ export default function Chat() {
         {/* Mobile sidebar backdrop */}
         {sidebarOpen && (
           <div
-            className="fixed inset-0 z-30 bg-foreground/20 md:hidden"
+            className="fixed inset-0 z-30 bg-foreground/20 lg:hidden"
             onClick={() => setSidebarOpen(false)}
             aria-hidden
           />
@@ -3295,7 +3296,7 @@ export default function Chat() {
               type="button"
               onClick={() => setSidebarOpen((s) => !s)}
               aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-              className="md:hidden rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shrink-0"
+              className="lg:hidden rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shrink-0"
             >
               <Menu className="h-4 w-4" />
             </button>
@@ -4524,6 +4525,7 @@ export default function Chat() {
                       if (!input.trim()) return;
                       if (!activeThreadId) createNewThread();
                       hasSentThisSessionRef.current = true;
+                      setSettingsOpen(false);
                       chat.sendMessage({ text: input });
                       setInput("");
                       setSlashOpen(false);

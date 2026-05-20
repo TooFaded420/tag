@@ -672,7 +672,7 @@ export function IntegrationsPanel({ jwt }: IntegrationsPanelProps) {
                                 type="button"
                                 onClick={() => handleDisconnect(slug)}
                                 disabled={isDisconnecting}
-                                className="hidden group-hover:inline-flex items-center rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
+                                className="inline-flex opacity-0 group-hover:opacity-100 focus:opacity-100 focus-visible:opacity-100 items-center rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-opacity disabled:opacity-50"
                                 aria-label={`Disconnect ${label}`}
                               >
                                 {isDisconnecting ? "…" : "Disconnect"}
